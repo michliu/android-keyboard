@@ -99,18 +99,19 @@
       - schema: futo_bopomofo
       - schema: futo_bopomofo_terra
   ```
-  `terra_pinyin` 詞庫不存在時 `futo_bopomofo_terra` 部署失敗只會記錄錯誤，與 zidian 既有的
-  不存在方案行為一致。
+  此檔寫入 Rime **user** 目錄（Rime 只在 user/shared 目錄尋找 `default.custom.yaml`，
+  且 user 目錄清除後由 `BundledRimeAssets` 重寫）。`terra_pinyin` 詞庫不存在時
+  `futo_bopomofo_terra` 部署失敗只會記錄錯誤，與 zidian 既有的不存在方案行為一致。
 
 ### 3. `BundledRimeAssets`（新檔 `engine/general/BundledRimeAssets.kt`）
 
-- 常數 `VERSION: Int`（每次修改 assets/rime 內容時遞增）、`FILES: List<String>`。
-- `ensure(context): Boolean`：若 pref `ChineseBundledRimeAssetsVersion != VERSION` 或任一檔案不存在於
-  `ChineseIME.getShared(context)`，就從 assets 複製全部檔案（覆寫）、更新 pref，回傳 `true`
+- 常數 `VERSION: Int`（每次修改 assets/rime 內容時遞增）、`SHARED_FILES`（三個方案／規則檔）、
+  `USER_FILES`（`default.custom.yaml`）。
+- `ensure(context, shared: File, user: File): Boolean`：若 pref `ChineseBundledRimeAssetsVersion != VERSION`
+  或任一檔案不存在於對應目錄，就從 assets 複製全部檔案（覆寫）、更新 pref，回傳 `true`
   表示需要重新部署；否則回傳 `false`。
-- 呼叫點：
-  - `ChineseIME.resetSharedFromResources` 解壓完成後（shared 被清空重建，必須重寫）。
-  - `ChineseIME.onStartInput`：`resetSharedFromResources(...) or ensure(...)` 任一為真即 `rime.deploy()`。
+- 呼叫點：`ChineseIME.onStartInput` 先呼叫 `resetSharedFromResources`（可能清空重建 shared），
+  再呼叫 `ensure`，任一為真即 `rime.deploy()`。
 
 ### 4. `ZhuyinKeymap`（新檔 `engine/general/ZhuyinKeymap.kt`）
 
@@ -133,7 +134,9 @@
 - `onEvent` 的 `EVENT_TYPE_INPUT_KEYPRESS` 在 `"bopomofo"` hint 下：
   - 注音字元（`ZhuyinKeymap.toRimeKey` 含有）→ 轉為 ASCII 鍵後送 `rime.processX11Code`，並 `rawInput.append(ASCII 鍵)`。
   - ASCII 數字 `0-9` → 不送 Rime；若 Rime 有預編輯則先 `rime.commitComposition()`，再 `commitText(數字)`（即 `handlePassByMessage` 的既有路徑）。
-  - 空白：Rime 預編輯非空時作為一聲送 Rime 並 `rawInput.append(' ')`；預編輯為空時維持既有行為（送 Rime、清 `rawInput`）。
+  - 空白：Rime 預編輯非空且 `rawInput` 最後一鍵不是聲調時，作為一聲送 Rime 並 `rawInput.append(' ')`；
+    最後一鍵已是聲調（` 6347`）時，選取第一個候選（`rime.selectCandidate(0)`，失敗則 `commitComposition`），
+    與拼音布局的空白行為一致；預編輯為空時維持既有行為（送 Rime、清 `rawInput`）。
   - 其他鍵（退格、Enter、標點）維持既有行為。
 - 非 bopomofo hint 的行為完全不變。
 - `debugInfo` 附加 `schema` 已含於 `configuration`，不需額外變更。
