@@ -58,7 +58,7 @@ subKeyboards:
 ## 測試
 
 - `ZhuyinLayoutTest` 新增：
-  - `subKeyboards[KeyboardLayoutKind.Alphabet1]` 存在，字母列鍵數 `[10, 9, 9]`（`$shift`/`$delete` 各算 1 鍵：`[10, 9, 9]`？— 以實際 `Row.keys.size` 為準：第三列含 shift、delete 共 9 鍵）。
+  - `subKeyboards[KeyboardLayoutKind.Alphabet1]` 存在，字母列鍵數 `[10, 9, 9]`（第三列 = shift + z…m 七鍵 + delete）。
   - 主鍵盤底列含 `BaseKey.code == -20` 的鍵；英文頁底列含 `code == -19` 的鍵。
 - 真機：「英」→ 英文頁；輸入 `Hello,` 直接上屏；組字 ㄋㄧˇ 中按「英」再打 `a` → 先上屏「你」再 `a`；
   shift 大寫；「中」切回後注音正常；`?123` 頁按 `,` 得到 `,`；拼音布局行為不變。
