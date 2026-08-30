@@ -530,7 +530,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     override fun onStartInput() {
-        if(resetSharedFromResources(helper.context, helper.lifecycleScope)) {
+        // Order matters: extracting the dictionary wipes the shared directory, so the bundled
+        // schemas are (re)copied afterwards.
+        val dictionaryChanged = resetSharedFromResources(helper.context, helper.lifecycleScope)
+        val bundledChanged = BundledRimeAssets.ensure(
+            helper.context, getShared(helper.context), getUser(helper.context)
+        )
+        if(dictionaryChanged || bundledChanged) {
             prevConfiguration = null
             coroScope.launch { rime.deploy() }
         }
