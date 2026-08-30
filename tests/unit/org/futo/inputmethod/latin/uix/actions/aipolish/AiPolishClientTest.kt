@@ -71,4 +71,11 @@ class AiPolishClientTest {
         val result = AiPolishClient(transport).polish(config, "p", "t")
         assertEquals("Unable to resolve host", result.exceptionOrNull()!!.message)
     }
+
+    @Test
+    fun wrapsNonIoExceptions() = runBlocking {
+        val transport = PolishTransport { _, _, _ -> throw SecurityException("Permission denied (missing INTERNET permission?)") }
+        val result = AiPolishClient(transport).polish(config, "p", "t")
+        assertEquals("Permission denied (missing INTERNET permission?)", result.exceptionOrNull()!!.message)
+    }
 }

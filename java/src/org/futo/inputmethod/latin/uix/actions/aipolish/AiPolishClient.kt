@@ -1,11 +1,11 @@
 package org.futo.inputmethod.latin.uix.actions.aipolish
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -65,7 +65,9 @@ class AiPolishClient(private val transport: PolishTransport) {
 
         val response = try {
             withContext(Dispatchers.IO) { transport.post(url, headers, body) }
-        } catch (e: IOException) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
             return Result.failure(PolishException(e.message ?: e.toString()))
         }
 
