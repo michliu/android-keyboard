@@ -814,8 +814,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
     /**
      * Key handling specific to the Zhuyin layout. Zhuyin symbols are translated to the ASCII
-     * keys of the standard keyboard; ASCII digits (from the number row) bypass Rime because the
-     * schema would interpret them as Zhuyin keys; space is tone 1 while composing.
+     * keys of the standard keyboard; printable ASCII (English page, symbols page, number row)
+     * bypasses Rime because the schema would interpret it as Zhuyin keys; space is tone 1 while
+     * composing.
      *
      * Per-key coroutines only stay in order up to their first suspension point, so Rime's
      * preedit may lag behind fast typing. [rawInput] is updated before any suspension and is
@@ -839,7 +840,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             return true
         }
 
-        if(codePoint in '0'.code..'9'.code) {
+        if(codePoint in 0x21..0x7E) {
+            // Printable ASCII never comes from the Zhuyin keys (they emit Zhuyin symbols); it is
+            // typed on the English page or the symbols page and must not reach Rime, which
+            // would read it as Zhuyin keys.
             coroScope.launch {
                 val composing = rawInput.text.isNotEmpty() || rime.preeditFlow.value.isNotEmpty()
                 rawInput.clear()
