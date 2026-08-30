@@ -159,6 +159,15 @@ Rime preedit "s" ──preedit_format xlit──► "ㄋ" ──► helper.setPr
 Rime candidates ──► SuggestedWords ──► 建議列；點選 → rime.selectCandidate → RimeMessage.Commit → commitText
 ```
 
+### 6. 方案選擇的重試與清除詞典的串行化（真機驗證後補充）
+
+- `updateConfig()` 選方案失敗（部署重建可能超過 3 秒輪詢）時不把配置標記為已套用，
+  以 2 秒間隔重試，總共最多 3 次；用盡後記住該配置並放棄（不再於每次 `onStartInput`
+  重新部署、阻塞主線程），直到 `invalidateConfiguration()`（詞庫變更、資源重載、清除詞典）才重新開始。
+- `clearUserHistoryDictionaries()` 與 `ReloadResources` 都在 `configSemaphore` 下重啟 Rime，
+  結束後主動呼叫 `updateConfig()`，避免與並行的設定更新交錯而停在預設方案（luna_pinyin）。
+- Rime 直通（Passby）鍵在注音布局下以注音符號上屏（空白除外），避免無詞庫時打出 `su3`。
+
 ## 錯誤處理
 
 - 內建資源複製失敗（IO 例外）：記錄 log，不阻斷 IME；下次 `onStartInput` 會重試（pref 未更新）。
