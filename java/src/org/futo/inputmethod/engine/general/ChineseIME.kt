@@ -519,9 +519,17 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             GlobalIMEMessage.collect { message ->
                 when(message) {
                     IMEMessage.ReloadResources -> coroScope.launch {
-                        rime.shutdown()
-                        rime.startup(false)
-                        prevConfiguration = null
+                        // Same serialisation as clearUserHistoryDictionaries(): no config update
+                        // may run while Rime is restarted.
+                        configSemaphore.acquire()
+                        try {
+                            rime.shutdown()
+                            rime.startup(false)
+                            invalidateConfiguration()
+                        } finally {
+                            configSemaphore.release()
+                        }
+                        updateConfig()
                     }
                     else -> {}
                 }
@@ -544,7 +552,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             helper.context, getShared(helper.context), getUser(helper.context)
         )
         if(dictionaryChanged || bundledChanged) {
-            prevConfiguration = null
+            invalidateConfiguration()
             coroScope.launch { rime.deploy() }
         }
         updateConfig()
@@ -579,7 +587,17 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         val fuzzyMode: Set<ChineseIMESettings.FuzzyPinyinModes>
     )
     private var prevConfiguration: Configuration? = null
+
+    /** The configuration the retry budget below applies to. */
+    private var retryConfiguration: Configuration? = null
     private var schemaSelectRetries = 0
+
+    /** Forget the applied configuration and the retry budget; the next updateConfig() starts over. */
+    private fun invalidateConfiguration() {
+        prevConfiguration = null
+        retryConfiguration = null
+        schemaSelectRetries = 0
+    }
 
     private fun writeCustomizationFile(cfg: Configuration) {
         val schema = cfg.schema
@@ -669,6 +687,16 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
                 val config = Configuration(schema, learning, simplified, autocorrect, fuzzy)
                 if (config != prevConfiguration) {
+                    if (config != retryConfiguration) {
+                        retryConfiguration = config
+                        schemaSelectRetries = 0
+                    } else if (schemaSelectRetries >= MaxSchemaSelectRetries) {
+                        // Already gave up on this configuration (e.g. no dictionary imported);
+                        // do not redeploy and block on every start of input. invalidateConfiguration()
+                        // (dictionary change, resource reload, clearing the user dictionary) starts over.
+                        return@launch
+                    }
+
                     rimeLoading.value = true
                     writeCustomizationFile(config)
                     rime.deploy()
@@ -693,12 +721,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                         // Leave prevConfiguration untouched so the next onStartInput retries, and
                         // retry a bounded number of times ourselves: after the user directory was
                         // wiped every schema has to be rebuilt, which can take longer than 3s.
+                        schemaSelectRetries++
                         if(schemaSelectRetries < MaxSchemaSelectRetries) {
-                            schemaSelectRetries++
                             coroScope.launch {
                                 delay(SchemaSelectRetryDelayMs)
                                 updateConfig()
                             }
+                        } else {
+                            Log.e(TAG, "Giving up on schema '${config.schema}' after $schemaSelectRetries attempts")
                         }
                     }
                 }
@@ -1036,8 +1066,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 // The user directory held the bundled default.custom.yaml; restore it before Rime restarts.
                 BundledRimeAssets.ensure(helper.context, getShared(helper.context), getUser(helper.context))
                 rime.startup(false)
-                prevConfiguration = null
-                schemaSelectRetries = 0
+                invalidateConfiguration()
             } finally {
                 configSemaphore.release()
             }
