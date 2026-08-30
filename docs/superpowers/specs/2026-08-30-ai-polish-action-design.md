@@ -30,7 +30,7 @@ LLM 走遠端 OpenAI 相容的 chat completions API（Base URL、API Key、Model
   - `AiPolishAction.kt`：`AiPolishAction`、`AiPolishWindow`（面板 UI）、預填與寫回的純函式。
 - `java/AndroidManifest.xml`：新增 `<uses-permission android:name="android.permission.INTERNET"/>`。
 - 字串：`java/res/values/strings-uix.xml` 新增英文字串（`action_ai_polish_*`）；中文翻譯屬 translations 子模組，本次不做。
-- 圖示：沿用既有 drawable（實作時選一個語意相近者，如編輯／魔杖類）。
+- 圖示：沿用既有 `R.drawable.edit_text`。
 
 ### 2. 設定（`AiPolishSettings.kt`）
 
@@ -45,7 +45,7 @@ LLM 走遠端 OpenAI 相容的 chat completions API（Base URL、API Key、Model
 `你是文字潤飾助手。請在不改變原意的前提下，修正錯字與語法、讓語句更通順自然，保留原本的語言與語氣，只輸出潤飾後的文字，不要加任何說明。`
 
 設定頁：`UserSettingsMenu(title, navPath = "actions/ai_polish", registerNavPath = true)`，四個 `SettingTextField`
-（Prompt 多行）。以 `Action.settingsMenu` 掛上，出現在 Actions 設定的齒輪處。
+（既有元件為單行；Prompt 也用單行，較長的編輯在面板內進行）。以 `Action.settingsMenu` 掛上，出現在 Actions 設定的齒輪處。
 
 ### 3. 面板（`AiPolishWindow : ActionWindow`）
 
