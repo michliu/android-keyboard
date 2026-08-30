@@ -90,6 +90,8 @@
   - 結尾 `__patch: [grammar:/hant?, futo_bopomofo.custom:/patch?]`。
 - `futo_bopomofo_terra.schema.yaml`：`__include: futo_bopomofo.schema:/`，覆寫
   `schema/schema_id: futo_bopomofo_terra`、`schema/name: 注音（聲調）`、
+  `switches`（與 base 相同，但本地宣告；否則 include 會帶入 base 的 `futo_bopomofo.custom.yaml`
+  已追加的 `futo_zh_simp` 開關，導致重複）、
   `translator/dictionary: terra_pinyin`、`translator/prism: futo_bopomofo_terra`、
   `speller/algebra`（同上但不含 `luna_tones`），結尾 patch 改為 `futo_bopomofo_terra.custom:/patch?`。
 - `default.custom.yaml`：
