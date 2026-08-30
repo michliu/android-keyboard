@@ -1,6 +1,8 @@
 package org.futo.inputmethod.v2keyboard
 
+import org.futo.inputmethod.keyboard.internal.KeyboardLayoutKind
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -30,5 +32,20 @@ class ZhuyinLayoutTest {
         val zhHant = mapping.substringAfter("\n  zh_Hant:\n").substringBefore("\n  zu:")
         assertTrue(zh.contains("- zh_bopomofo"))
         assertTrue(zhHant.contains("- zh_bopomofo"))
+    }
+
+    @Test
+    fun hasEnglishSubKeyboardWithToggleKeys() {
+        val keyboard = parseKeyboardYamlString(layoutFile.readText())
+
+        val mainBottom = keyboard.getEffectiveRows(0).first { it.isBottomRow }
+        assertTrue(mainBottom.keys.filterIsInstance<BaseKey>().any { it.code == -20 && it.spec.startsWith("英") })
+
+        val english = keyboard.subKeyboards[KeyboardLayoutKind.Alphabet1]
+        assertNotNull(english)
+        val letterRows = english!!.rows.filter { it.isLetterRow }
+        assertEquals(listOf(10, 9, 9), letterRows.map { it.keys.size })
+        val englishBottom = english.rows.first { it.isBottomRow }
+        assertTrue(englishBottom.keys.filterIsInstance<BaseKey>().any { it.code == -19 && it.spec.startsWith("中") })
     }
 }
