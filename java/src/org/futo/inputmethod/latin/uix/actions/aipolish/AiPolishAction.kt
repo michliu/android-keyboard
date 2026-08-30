@@ -35,6 +35,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.futo.inputmethod.latin.R
 import org.futo.inputmethod.latin.uix.Action
@@ -53,6 +54,8 @@ private sealed class PolishState {
     data class Error(val message: String) : PolishState()
 }
 
+private enum class EditorSlot { Prompt, Text, None }
+
 private class AiPolishWindow(
     private val manager: KeyboardManagerForAction,
     private val client: AiPolishClient,
@@ -65,10 +68,28 @@ private class AiPolishWindow(
     val state: MutableState<PolishState> = mutableStateOf(PolishState.Idle)
 
     // LatinIME only has a single input connection override slot, so at most one
-    // ActionTextEditor may be mounted at a time. This flag decides which one.
-    val editingPrompt: MutableState<Boolean> = mutableStateOf(false)
+    // ActionTextEditor may be mounted at a time. This slot decides which one currently
+    // hosts it; None while switching so the outgoing editor's unsetInputConnection()
+    // cannot clobber the incoming editor's override.
+    val editorSlot: MutableState<EditorSlot> = mutableStateOf(EditorSlot.Text)
+    private var switchJob: Job? = null
 
     private var job: Job? = null
+
+    /** Unmount the current editor first; mount the target one on a later frame so the old
+     *  editor's unsetInputConnection() cannot clobber the new editor's override. */
+    private fun switchEditor(target: EditorSlot) {
+        if (editorSlot.value == target) return
+        switchJob?.cancel()
+        editorSlot.value = EditorSlot.None
+        switchJob = manager.getLifecycleScope().launch {
+            // withFrameNanos requires a MonotonicFrameClock, which the lifecycle scope's
+            // dispatcher does not provide, so use a short delay to let the outgoing
+            // editor's disposal effects run on a later frame instead.
+            delay(32)
+            editorSlot.value = target
+        }
+    }
 
     @Composable
     override fun windowName(): String = stringResource(R.string.action_ai_polish_title)
@@ -111,6 +132,7 @@ private class AiPolishWindow(
 
     override fun close(): CloseResult {
         job?.cancel()
+        switchJob?.cancel()
         return CloseResult.Default
     }
 
@@ -148,10 +170,12 @@ private class AiPolishWindow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Label(R.string.action_ai_polish_prompt_label)
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = { editingPrompt.value = !editingPrompt.value }) {
+                TextButton(onClick = {
+                    switchEditor(if (editorSlot.value == EditorSlot.Prompt) EditorSlot.Text else EditorSlot.Prompt)
+                }) {
                     Text(
                         stringResource(
-                            if (editingPrompt.value) R.string.action_ai_polish_done
+                            if (editorSlot.value == EditorSlot.Prompt) R.string.action_ai_polish_done
                             else R.string.action_ai_polish_edit_prompt
                         )
                     )
@@ -161,7 +185,7 @@ private class AiPolishWindow(
                 }
             }
             Bordered {
-                if (editingPrompt.value) {
+                if (editorSlot.value == EditorSlot.Prompt) {
                     ActionTextEditor(
                         text = prompt,
                         multiline = true,
@@ -177,7 +201,7 @@ private class AiPolishWindow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { editingPrompt.value = true }
+                            .clickable { switchEditor(EditorSlot.Prompt) }
                             .padding(4.dp)
                     )
                 }
@@ -185,7 +209,7 @@ private class AiPolishWindow(
 
             Label(R.string.action_ai_polish_source_label)
             Bordered {
-                if (!editingPrompt.value) {
+                if (editorSlot.value == EditorSlot.Text) {
                     ActionTextEditor(
                         text = text,
                         multiline = true,
@@ -201,6 +225,7 @@ private class AiPolishWindow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
                             .fillMaxWidth()
+                            .clickable { switchEditor(EditorSlot.Text) }
                             .padding(4.dp)
                     )
                 }
