@@ -50,10 +50,15 @@ LLM 走遠端 OpenAI 相容的 chat completions API（Base URL、API Key、Model
 ### 3. 面板（`AiPolishWindow : ActionWindow`）
 
 - `Action(canShowKeyboard = true, windowImpl = …)`，面板 `onlyShowAboveKeyboard = false`，顯示關閉鈕。
-- 版面（Column）：
-  1. Prompt：多行 `ActionTextEditor`（`autofocus = false`），初值 = 設定中的 Prompt；右側「重設」鈕恢復設定值。
-  2. 原文：多行 `ActionTextEditor`（`autofocus = false`），初值 = 預填文字（見 §5）。
-  3. 結果：只讀、可捲動 `Text`；請求中顯示 `CircularProgressIndicator`；失敗顯示錯誤文字。
+- 限制：`LatinIME` 只有一個 InputConnection 覆寫槽位，`ActionTextEditor` 進入組合時就會覆寫，因此**同一時刻只能掛載一個
+  `ActionTextEditor`**（仓庫中沒有兩個編輯器同屏的先例）。
+- 版面（Column，三區都可見）：
+  1. Prompt：預設以只讀文字顯示（點擊或按「Edit」進入編輯），編輯時掛載多行 `ActionTextEditor`（`autofocus = true`），
+     按「Done」結束；右側「重設」鈕恢復設定值。
+  2. 原文：未編輯 Prompt 時掛載多行 `ActionTextEditor`（`autofocus = false`），初值 = 預填文字（見 §5）；
+     編輯 Prompt 期間降級為只讀文字。
+  3. 結果：只讀、可捲動 `Text`；請求中顯示 `CircularProgressIndicator`；失敗顯示可捲動的錯誤文字。
+  各區以帶邊框的 `Surface` 包裹；高度緊湊（Prompt 編輯器 56dp、原文 80dp、結果 80dp），外層 Column 可捲動。
   4. 按鈕列：「潤飾」（原文為空時停用）、「替換」「插入」「複製」（無結果時停用）。
 - 狀態：`Idle / Loading / Success(text) / Error(message)`，存在面板實例內；關閉面板時取消進行中的 coroutine。
 - 面板內兩個文字框在編輯時會接管鍵盤輸入（`ActionTextEditor` 既有行為），因此原文與 prompt 皆可在面板內修改。
