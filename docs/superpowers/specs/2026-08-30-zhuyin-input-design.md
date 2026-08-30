@@ -134,7 +134,9 @@
 - `safeguardInputStringForSimulation(input)`：依 `layoutHint`
   過濾——`"bopomofo"` 時保留 `ZhuyinKeymap.alphabet` 中的字元，其他 hint 維持只留 ASCII 字母。
 - `onEvent` 的 `EVENT_TYPE_INPUT_KEYPRESS` 在 `"bopomofo"` hint 下：
-  - 注音字元（`ZhuyinKeymap.toRimeKey` 含有）→ 轉為 ASCII 鍵後送 `rime.processX11Code`，並 `rawInput.append(ASCII 鍵)`。
+  - 注音字元（`ZhuyinKeymap.toRimeKey` 含有）→ 轉為 ASCII 鍵後送 `rime.processX11Code`，並 `rawInput.append(ASCII 鍵)`；
+    但聲調鍵在 Rime 預編輯為空時直接忽略（聲調不是方案的 initial，Rime 會直通並打出數字）。
+  - 以上判斷（讀 `rime.preeditFlow.value`、改 `rawInput`）都在送鍵的 coroutine 內進行，與先前排隊的按鍵保持 FIFO。
   - ASCII 數字 `0-9` → 不送 Rime；若 Rime 有預編輯則先 `rime.commitComposition()`，再 `commitText(數字)`（即 `handlePassByMessage` 的既有路徑）。
   - 空白：Rime 預編輯非空且 `rawInput` 最後一鍵不是聲調時，作為一聲送 Rime 並 `rawInput.append(' ')`；
     最後一鍵已是聲調（` 6347`）時，選取第一個候選（`rime.selectCandidate(0)`，失敗則 `commitComposition`），
