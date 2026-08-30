@@ -247,8 +247,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
     override fun getLoadingState(): MutableState<Boolean>? = rimeLoading
 
+    private val isBopomofo get() = layoutHint == "bopomofo"
+
     private val currentTransformation get() = when(layoutHint) {
         "stroke" -> StrokeTransformation
+        "bopomofo" -> ZhuyinKeymap.toZhuyin
         else -> emptyMap()
     }
 
@@ -400,10 +403,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     // This assumes that the only valid characters for input simulation are ASCII letters
     // In particular, some characters like space will break the input by ending composition
     // (Maybe there are other valid symbols potentially?)
-    private fun safeguardInputStringForSimulation(input: String): String {
-        var string = input
-        string = string.filter { it in 'a'..'z' || it in 'A'..'Z' }
-        return string
+    private fun safeguardInputStringForSimulation(input: String): String = when {
+        isBopomofo -> input.filter { it in ZhuyinKeymap.alphabet }
+        else -> input.filter { it in 'a'..'z' || it in 'A'..'Z' }
     }
 
     private var updateEditJob: Job? = null
@@ -635,6 +637,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                         "stroke"
                     }
 
+                    "bopomofo" -> {
+                        val hasTerraPinyin = File(getShared(helper.context), "terra_pinyin.dict.yaml").exists()
+                        if(hasTerraPinyin) "futo_bopomofo_terra" else "futo_bopomofo"
+                    }
+
                     null -> {
                         return@launch
                     }
@@ -743,6 +750,50 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         }
         return false
     }
+
+    /**
+     * Key handling specific to the Zhuyin layout. Zhuyin symbols are translated to the ASCII
+     * keys of the standard keyboard; ASCII digits (from the number row) bypass Rime because the
+     * schema would interpret them as Zhuyin keys; space is tone 1 while composing.
+     *
+     * @return true if the key was fully handled.
+     */
+    private fun handleBopomofoKey(codePoint: Int): Boolean {
+        ZhuyinKeymap.rimeKeyFor(codePoint)?.let { key ->
+            rawInput.append(key.code)
+            coroScope.launch { rime.processX11Code(key.code) }
+            return true
+        }
+
+        val composing = rime.preeditFlow.value.isNotEmpty()
+
+        if(codePoint in '0'.code..'9'.code) {
+            rawInput.clear()
+            coroScope.launch {
+                if(composing) rime.commitComposition()
+                connect?.commitText(String(Character.toChars(codePoint)), 1)
+            }
+            return true
+        }
+
+        if(codePoint == ' '.code && composing) {
+            if(ZhuyinKeymap.isToneKey(rawInput.text.lastOrNull())) {
+                // The syllable already has a tone: space picks the first candidate, like the
+                // pinyin layout does.
+                rawInput.clear()
+                coroScope.launch {
+                    if(!rime.selectCandidate(0)) rime.commitComposition()
+                }
+            } else {
+                rawInput.append(' '.code)
+                coroScope.launch { rime.processX11Code(' '.code) }
+            }
+            return true
+        }
+
+        return false
+    }
+
     override fun onEvent(event: Event) {
         helper.requestCursorUpdate()
         when (event.eventType) {
@@ -750,6 +801,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             Event.EVENT_TYPE_INPUT_KEYPRESS_RESUMED -> {
                 if (triggerIfIsAction(event.mKeyCode))
                     return
+                if(isBopomofo && !editingState.active && event.mKeyCode == Event.NOT_A_KEY_CODE) {
+                    if(handleBopomofoKey(event.mCodePoint)) return
+                }
                 val x11Code = when (event.mKeyCode) {
                     Constants.CODE_DELETE -> '\b'.code
                     Event.NOT_A_KEY_CODE -> event.mCodePoint
@@ -937,6 +991,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 it.deleteRecursively()
                 it.mkdirs()
             }
+            // The user directory held the bundled default.custom.yaml; restore it before Rime restarts.
+            BundledRimeAssets.ensure(helper.context, getShared(helper.context), getUser(helper.context))
             rime.startup(false)
             prevConfiguration = null
         }
