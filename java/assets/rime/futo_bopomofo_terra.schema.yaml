@@ -1,0 +1,36 @@
+# Rime schema
+# encoding: utf-8
+#
+# Zhuyin schema backed by the terra_pinyin dictionary (with tones). Selected automatically by
+# FUTO Keyboard when terra_pinyin.dict.yaml is present in the Rime shared directory.
+
+__include: futo_bopomofo.schema:/
+
+schema:
+  schema_id: futo_bopomofo_terra
+  name: 注音（聲調）
+  version: "1.0"
+  author:
+    - 佛振 <chen.sst@gmail.com>
+    - FUTO Keyboard
+  description: |
+    注音符號輸入，採用「大千式」鍵盤排列。
+    使用 terra_pinyin 詞庫，聲調參與候選字篩選。
+  dependencies:
+    - stroke
+
+speller:
+  algebra:
+    __patch:
+      - futo_zhuyin:/pinyin_to_zhuyin
+      - futo_zhuyin:/free_order
+      - futo_zhuyin:/abbreviation
+      - futo_zhuyin:/keymap_bopomofo
+
+translator:
+  dictionary: terra_pinyin
+  prism: futo_bopomofo_terra
+
+__patch:
+  - grammar:/hant?
+  - futo_bopomofo_terra.custom:/patch?

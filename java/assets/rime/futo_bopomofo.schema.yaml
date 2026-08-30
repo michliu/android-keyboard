@@ -1,0 +1,116 @@
+# Rime schema
+# encoding: utf-8
+#
+# Zhuyin schema bundled with FUTO Keyboard. Adapted from rime-bopomofo, but backed by the
+# luna_pinyin dictionary (no tone data) that ships in the FUTO Chinese dictionary file.
+
+schema:
+  schema_id: futo_bopomofo
+  name: 注音
+  version: "1.0"
+  author:
+    - 佛振 <chen.sst@gmail.com>
+    - FUTO Keyboard
+  description: |
+    注音符號輸入，採用「大千式」鍵盤排列。
+    使用 luna_pinyin 詞庫，聲調只作為音節分隔，不影響候選字。
+  dependencies:
+    - stroke
+
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中文, 西文 ]
+  - name: full_shape
+    states: [ 半角, 全角 ]
+  - name: simplification
+    states: [ 漢字, 汉字 ]
+  - name: ascii_punct
+    states: [ 。，, ．， ]
+
+engine:
+  processors:
+    - ascii_composer
+    - recognizer
+    - key_binder
+    - speller
+    - punctuator
+    - selector
+    - navigator
+    - express_editor
+  segmentors:
+    - ascii_segmentor
+    - matcher
+    - abc_segmentor
+    - punct_segmentor
+    - fallback_segmentor
+  translators:
+    - punct_translator
+    - table_translator@custom_phrase
+    - reverse_lookup_translator
+    - script_translator
+  filters:
+    - simplifier
+    - uniquifier
+
+speller:
+  alphabet: '1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/- 6347'
+  initials: '1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-'
+  finals: " 6347"
+  delimiter: "'"
+  use_space: true
+  algebra:
+    __patch:
+      - futo_zhuyin:/pinyin_to_zhuyin
+      - futo_zhuyin:/luna_tones
+      - futo_zhuyin:/free_order
+      - futo_zhuyin:/abbreviation
+      - futo_zhuyin:/keymap_bopomofo
+
+translator:
+  dictionary: luna_pinyin
+  prism: futo_bopomofo
+  preedit_format:
+    - "xlit|1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/- 6347'|ㄅㄆㄇㄈㄉㄊㄋㄌㄍㄎㄏㄐㄑㄒㄓㄔㄕㄖㄗㄘㄙㄧㄨㄩㄚㄛㄜㄝㄞㄟㄠㄡㄢㄣㄤㄥㄦˉˊˇˋ˙ |"
+
+custom_phrase:
+  dictionary: ""
+  user_dict: custom_phrase
+  db_class: stabledb
+  enable_completion: false
+  enable_sentence: false
+  initial_quality: 1
+
+reverse_lookup:
+  dictionary: stroke
+  enable_completion: true
+  prefix: "`"
+  suffix: "'"
+  tips: 〔筆畫〕
+  preedit_format:
+    - xlit/hspnz/一丨丿丶乙/
+  comment_format:
+    - xform/([nl])v/$1ü/
+
+punctuator:
+  import_preset: symbols
+
+key_binder:
+  import_preset: default
+  bindings:
+    # The default preset binds these keys to paging; they are Zhuyin keys here.
+    - { when: has_menu, accept: comma, send: comma }      # ㄝ
+    - { when: has_menu, accept: period, send: period }    # ㄡ
+    - { when: has_menu, accept: minus, send: minus }      # ㄦ
+
+recognizer:
+  patterns:
+    uppercase: "^[A-Z][-_+.'0-9A-Za-z]*$"
+    url: "^(www[.]|https?:|ftp:|mailto:).*$"
+    reverse_lookup: "`[a-z]*'?$"
+
+__patch:
+  # 使用八股文語言模型
+  - grammar:/hant?
+  # 用家自選配置（FUTO Keyboard 會寫入 futo_bopomofo.custom.yaml）
+  - futo_bopomofo.custom:/patch?

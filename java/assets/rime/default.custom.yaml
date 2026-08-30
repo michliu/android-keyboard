@@ -1,0 +1,6 @@
+# Written by FUTO Keyboard into the Rime user directory so that the bundled Zhuyin schemas
+# are built on deploy. Do not edit; it is regenerated when missing.
+patch:
+  schema_list/+:
+    - schema: futo_bopomofo
+    - schema: futo_bopomofo_terra
