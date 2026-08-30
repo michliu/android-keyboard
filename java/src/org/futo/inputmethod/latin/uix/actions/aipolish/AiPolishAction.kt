@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.futo.inputmethod.latin.R
-import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.uix.Action
 import org.futo.inputmethod.latin.uix.ActionTextEditor
 import org.futo.inputmethod.latin.uix.ActionWindow
@@ -67,8 +66,7 @@ private class AiPolishWindow(
     private val context: Context = manager.getContext()
 
     /** Password fields must never be read into the window, let alone sent to the API. */
-    private val sensitiveField: Boolean =
-        Settings.getInstance().current?.mInputAttributes?.mIsPasswordField == true
+    private val sensitiveField: Boolean = manager.isHostPasswordField()
 
     private val source =
         if (sensitiveField) Source("", SourceKind.None)
@@ -173,7 +171,7 @@ private class AiPolishWindow(
             contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
             modifier = Modifier.weight(1f)
         ) {
-            Text(stringResource(label), maxLines = 1, softWrap = false)
+            Text(stringResource(label), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
         }
     }
 

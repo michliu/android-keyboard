@@ -113,6 +113,9 @@ interface KeyboardManagerForAction {
     /** Atomically replaces the entire text of the real editor. */
     fun replaceAllText(text: String)
 
+    /** Whether the real (host) editor is a password field; such text must never be read or sent anywhere. */
+    fun isHostPasswordField(): Boolean
+
     // Returns null if the current IME is not of this kind.
     // TODO: In the future make an IMEActionInterface for correctness
     fun getCurrentIME(): IMEInterface

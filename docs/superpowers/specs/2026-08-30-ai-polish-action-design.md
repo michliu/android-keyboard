@@ -87,10 +87,11 @@ fun pickSource(selected: String?, all: String?): Source
 ```
 - 選取非空 → `Selection`；否則整框非空 → `WholeField`；否則 `None`（空字串）。
 - 開啟面板時呼叫一次並記住 `kind`。
-- **密碼欄位不預填**：開啟面板時以 `Settings.getInstance().current?.mInputAttributes?.mIsPasswordField`
-  判斷宿主輸入框是否為密碼欄位；是的話完全不呼叫 `getSelectedText()/getAllText()`，直接用
-  `Source("", SourceKind.None)`，並在結果區的 Idle 狀態顯示 `action_ai_polish_sensitive_field`
-  說明未載入。避免密碼以明文顯示或被送到外部 API；使用者仍可自行輸入文字使用。
+- **密碼欄位不預填**：開啟面板時以 `KeyboardManagerForAction.isHostPasswordField()` 判斷宿主輸入框是否為密碼欄位，
+  該實作讀取宿主（未被 action 的 `ActionTextEditor` 覆寫過）的 `EditorInfo`（`LatinIME.getBaseInputEditorInfo()`）
+  搭配 `InputTypeUtils.isPasswordInputType()/isVisiblePasswordInputType()` 判斷；是的話完全不呼叫
+  `getSelectedText()/getAllText()`，直接用 `Source("", SourceKind.None)`，並在結果區的 Idle 狀態顯示
+  `action_ai_polish_sensitive_field` 說明未載入。避免密碼以明文顯示或被送到外部 API；使用者仍可自行輸入文字使用。
 - 「替換」：`Selection` → `manager.typeText(result)`（commitText 會取代選取區）；
   `WholeField` → `manager.replaceAllText(result)`；`None` → 等同「插入」。
 - 「插入」：`manager.typeText(result)`。

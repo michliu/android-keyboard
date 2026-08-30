@@ -121,6 +121,7 @@ import org.futo.inputmethod.latin.SupportsNavbarExtension
 import org.futo.inputmethod.latin.common.Constants
 import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.suggestions.SuggestionStripViewListener
+import org.futo.inputmethod.latin.utils.InputTypeUtils
 import org.futo.inputmethod.latin.uix.actions.ActionEditor
 import org.futo.inputmethod.latin.uix.actions.ActionRegistry
 import org.futo.inputmethod.latin.uix.actions.AllActions
@@ -544,6 +545,11 @@ class UixActionKeyboardManager(val uixManager: UixManager, val latinIME: LatinIM
         }
         ic.commitText(text, 1)
         ic.endBatchEdit()
+    }
+
+    override fun isHostPasswordField(): Boolean {
+        val inputType = latinIME.getBaseInputEditorInfo()?.inputType ?: return false
+        return InputTypeUtils.isPasswordInputType(inputType) || InputTypeUtils.isVisiblePasswordInputType(inputType)
     }
 
     override fun getCurrentIME(): IMEInterface {
