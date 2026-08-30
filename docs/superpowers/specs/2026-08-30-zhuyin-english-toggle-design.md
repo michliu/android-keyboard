@@ -12,11 +12,15 @@
 - 布局的 `subKeyboards.Alphabet1` 是黏性的第二套字母鍵盤（日文 flick 的 ABC 頁即此機制）：
   按鍵 `code: -20`（`CODE_TO_ALPHA_1_LAYOUT`）切入，`code: -19`（`CODE_TO_ALPHA_0_LAYOUT`）切回。
   `altPages`（`$alt0`）是一次性頁面，不適用。
-- 注音頁的按鍵只會產生 Unicode 注音符號（U+3105… 與聲調符號），因此在 `imeHint == "bopomofo"` 下
-  抵達 `ChineseIME` 的任何 **ASCII 可見字元（0x21–0x7E）**都只可能來自英文頁或 `?123` 符號頁，
-  一律不送 Rime、直接上屏（組字中先 `commitComposition()`）。這把既有的「ASCII 數字直通」推廣為全部 ASCII 可見字元，
-  順帶修正 `?123` 頁的 `,` `.` `;` `/` `-` 會被 Rime 當成注音鍵（ㄝ ㄡ ㄤ ㄥ ㄦ）組字的問題。
-- 空白、Enter、退格維持既有路徑（空白在組字中仍是一聲／選字）。
+- `ChineseIME` 透過 `helper.keyboardSwitcher.keyboard?.mId?.mElement?.kind == KeyboardLayoutKind.Alphabet1`
+  判斷英文頁是否啟用（與 `JapaneseIME` 相同做法）。
+  - **英文頁**：所有按鍵都是純文字，永不編輯注音組字；若切換時仍有未上屏的組字，先 `commitComposition()`。
+    ASCII 可見字元與空白直接上屏；退格／Enter 在組字上屏後走一般路徑。
+  - **注音頁與 `?123` 頁**：注音鍵只會產生 Unicode 注音符號，因此 ASCII 字母、數字與方案的拼寫標點
+    `, . ; / -`（`ZhuyinKeymap.bypassesRime`）不送 Rime、直接上屏——這修正 `?123` 頁的 `,` 等被當成注音鍵
+    （ㄝ ㄡ ㄤ ㄥ ㄦ）組字的問題；其他 ASCII 標點（`! ? " ( )` …）仍送 Rime，由 punctuator 轉成全形，
+    與拼音布局一致。
+- 空白、Enter、退格在注音頁維持既有路徑（空白在組字中仍是一聲／選字）。
 
 ## 布局變更（`java/assets/layouts/Chinese/zh_bopomofo.yaml`，子模組分支 `zhuyin-layout`）
 
@@ -47,13 +51,16 @@ subKeyboards:
 ```
 
 - 整體 `autoShift: false` 沿用，英文頁不自動大寫；`$shift` 手動大寫可用。
+- `Alphabet1.attributes: { moreKeyMode: All }`，讓英文頁保有長按數字／符號（根布局是 `OnlyExplicit`）。
 - `LayoutSpec.md` 的 bopomofo 段落補充一句：布局可用 `subKeyboards.Alphabet1` 提供英文頁，ASCII 字元由 IME 直接上屏。
 
 ## `ChineseIME` 變更
 
-`handleBopomofoKey` 的數字分支條件由 `codePoint in '0'.code..'9'.code` 改為 `codePoint in 0x21..0x7E`，
-其餘邏輯不變（`rawInput.clear()`；組字中 `commitComposition()`；`commitText(字元)`）。KDoc 同步改為
-「ASCII 可見字元（來自英文頁或符號頁）不經 Rime」。非 bopomofo hint 行為不變。
+- `handleBopomofoKey` 的數字分支條件改為 `ZhuyinKeymap.bypassesRime(codePoint)`（字母、數字、`, . ; / -`），
+  其餘邏輯不變（`rawInput.clear()`；組字中 `commitComposition()`；`commitText(字元)`）。
+- 新增 `handleEnglishPageKey(event)`：在英文頁上，先上屏未完成的組字，再把 0x20–0x7E 的字元直接上屏；
+  其他鍵（退格／Enter）回傳 false 走一般路徑。`onEvent` 的 bopomofo 分支先判斷 `isOnEnglishPage`。
+- 非 bopomofo hint 行為不變。
 
 ## 測試
 
