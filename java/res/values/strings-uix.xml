@@ -709,12 +709,14 @@ Default is %1$s</string>
     <string name="action_ai_polish_settings_title">AI Polish Settings</string>
     <string name="action_ai_polish_setting_base_url">API base URL</string>
     <string name="action_ai_polish_setting_api_key">API key</string>
+    <string name="action_ai_polish_setting_api_key_placeholder">sk-…</string>
     <string name="action_ai_polish_setting_model">Model</string>
     <string name="action_ai_polish_setting_prompt">Default prompt</string>
     <string name="action_ai_polish_prompt_label">Prompt</string>
     <string name="action_ai_polish_source_label">Text</string>
     <string name="action_ai_polish_result_label">Result</string>
     <string name="action_ai_polish_result_placeholder">The polished text will appear here</string>
+    <string name="action_ai_polish_sensitive_field">Text from a password field is not loaded</string>
     <string name="action_ai_polish_run">Polish</string>
     <string name="action_ai_polish_replace">Replace</string>
     <string name="action_ai_polish_insert">Insert</string>

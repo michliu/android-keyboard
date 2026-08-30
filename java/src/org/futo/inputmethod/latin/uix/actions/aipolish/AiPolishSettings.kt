@@ -1,7 +1,6 @@
 package org.futo.inputmethod.latin.uix.actions.aipolish
 
 import android.content.Context
-import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import androidx.datastore.preferences.core.stringPreferencesKey
 import org.futo.inputmethod.latin.R
@@ -26,9 +25,15 @@ object AiPolishSettings {
         model = context.getSetting(Model),
     )
 
-    private fun textSetting(title: Int, key: SettingsKey<String>) = UserSetting(name = title) {
-        SettingTextField(stringResource(title), key.default, key)
-    }
+    /** [placeholder] is a string resource; the key's default is used when it is null. */
+    private fun textSetting(title: Int, key: SettingsKey<String>, placeholder: Int? = null) =
+        UserSetting(name = title) {
+            SettingTextField(
+                stringResource(title),
+                placeholder?.let { stringResource(it) } ?: key.default,
+                key
+            )
+        }
 
     val menu = UserSettingsMenu(
         title = R.string.action_ai_polish_settings_title,
@@ -36,7 +41,10 @@ object AiPolishSettings {
         registerNavPath = true,
         settings = listOf(
             textSetting(R.string.action_ai_polish_setting_base_url, BaseUrl),
-            textSetting(R.string.action_ai_polish_setting_api_key, ApiKey),
+            textSetting(
+                R.string.action_ai_polish_setting_api_key, ApiKey,
+                R.string.action_ai_polish_setting_api_key_placeholder
+            ),
             textSetting(R.string.action_ai_polish_setting_model, Model),
             textSetting(R.string.action_ai_polish_setting_prompt, Prompt),
         )

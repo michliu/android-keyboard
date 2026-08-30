@@ -27,7 +27,8 @@ LLM 走遠端 OpenAI 相容的 chat completions API（Base URL、API Key、Model
 - 新目錄 `java/src/org/futo/inputmethod/latin/uix/actions/aipolish/`：
   - `AiPolishSettings.kt`：`SettingsKey<String>` 四項與設定頁 `UserSettingsMenu`。
   - `AiPolishClient.kt`：請求／回應資料類、`PolishTransport` 介面、`HttpUrlPolishTransport`、`AiPolishClient`。
-  - `AiPolishAction.kt`：`AiPolishAction`、`AiPolishWindow`（面板 UI）、預填與寫回的純函式。
+  - `AiPolishSource.kt`：預填來源的純函式與型別（`SourceKind`、`Source`、`pickSource`，見 §5）。
+  - `AiPolishAction.kt`：`AiPolishAction`、`AiPolishWindow`（面板 UI）與寫回邏輯。
 - `java/AndroidManifest.xml`：新增 `<uses-permission android:name="android.permission.INTERNET"/>`。
 - 字串：`java/res/values/strings-uix.xml` 新增英文字串（`action_ai_polish_*`）；中文翻譯屬 translations 子模組，本次不做。
 - 圖示：沿用既有 `R.drawable.edit_text`。
@@ -52,7 +53,9 @@ LLM 走遠端 OpenAI 相容的 chat completions API（Base URL、API Key、Model
 - `Action(canShowKeyboard = true, windowImpl = …)`，面板 `onlyShowAboveKeyboard = false`，顯示關閉鈕。
 - 限制：`LatinIME` 只有一個 InputConnection 覆寫槽位，`ActionTextEditor` 進入組合時就會覆寫、dispose 時才解除，因此
   **同一時刻只能掛載一個 `ActionTextEditor`**，且切換必須分兩步：先把槽位設為 `None` 卸載目前的編輯器，
-  下一拍（`delay(32)`）再掛載目標編輯器；若在同一次重組中換掉，新編輯器的覆寫會被舊編輯器的解除清掉
+  待舊編輯器真的釋放覆寫後再掛載目標編輯器。第二步由舊編輯器的 `afterUnOverride` callback 觸發
+  （`ActionTextEditor` 在 `unsetInputConnection()` 之後呼叫），因此是事件驅動而非計時等待：
+  記住 `pendingSlot`，在 callback 中才把槽位設為目標。若在同一次重組中換掉，新編輯器的覆寫會被舊編輯器的解除清掉
   （真機實測：鍵盤輸入落到宿主輸入框）。
 - 版面（Column，三區都可見）：
   1. Prompt：預設以只讀文字顯示（點擊或按「Edit」進入編輯），編輯時掛載多行 `ActionTextEditor`（`autofocus = true`），
@@ -72,9 +75,10 @@ fun getSelectedText(): String?          // ic.getSelectedText(0)?.toString()，�
 fun getAllText(): String?               // ic.getExtractedText(ExtractedTextRequest(), 0)?.text?.toString()
 fun replaceAllText(text: String)        // beginBatchEdit; setSelection(0, len); commitText(text, 1); endBatchEdit
 ```
-`len` 以 `getAllText()` 的長度計；`ic` 為 null 時不做事。
+`replaceAllText` 只做一次 `getExtractedText`，且僅在 `partialStartOffset == -1`（編輯器給的是整段文字）時
+才 `setSelection(0, len)`；否則退回單純在游標處 `commitText`，以免取代到未知的前綴。`ic` 為 null 時不做事。
 
-### 5. 預填與寫回（純函式，放在 `AiPolishAction.kt`，可單測）
+### 5. 預填與寫回（純函式放在 `AiPolishSource.kt`，可單測）
 
 ```kotlin
 enum class SourceKind { Selection, WholeField, None }
@@ -83,6 +87,10 @@ fun pickSource(selected: String?, all: String?): Source
 ```
 - 選取非空 → `Selection`；否則整框非空 → `WholeField`；否則 `None`（空字串）。
 - 開啟面板時呼叫一次並記住 `kind`。
+- **密碼欄位不預填**：開啟面板時以 `Settings.getInstance().current?.mInputAttributes?.mIsPasswordField`
+  判斷宿主輸入框是否為密碼欄位；是的話完全不呼叫 `getSelectedText()/getAllText()`，直接用
+  `Source("", SourceKind.None)`，並在結果區的 Idle 狀態顯示 `action_ai_polish_sensitive_field`
+  說明未載入。避免密碼以明文顯示或被送到外部 API；使用者仍可自行輸入文字使用。
 - 「替換」：`Selection` → `manager.typeText(result)`（commitText 會取代選取區）；
   `WholeField` → `manager.replaceAllText(result)`；`None` → 等同「插入」。
 - 「插入」：`manager.typeText(result)`。

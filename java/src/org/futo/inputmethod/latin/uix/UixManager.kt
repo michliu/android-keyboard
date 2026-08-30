@@ -535,9 +535,13 @@ class UixActionKeyboardManager(val uixManager: UixManager, val latinIME: LatinIM
 
     override fun replaceAllText(text: String) {
         val ic = latinIME.getBaseInputConnection() ?: return
-        val length = getAllText()?.length ?: 0
+        val extracted = ic.getExtractedText(ExtractedTextRequest(), 0)
         ic.beginBatchEdit()
-        ic.setSelection(0, length)
+        // Only select-all when the editor gave us the whole text; otherwise fall back to
+        // committing at the cursor rather than replacing an unknown prefix.
+        if (extracted != null && extracted.partialStartOffset == -1) {
+            ic.setSelection(0, extracted.text?.length ?: 0)
+        }
         ic.commitText(text, 1)
         ic.endBatchEdit()
     }

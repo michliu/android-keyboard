@@ -1,8 +1,11 @@
 package org.futo.inputmethod.latin.uix.actions.aipolish
 
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Build
+import android.os.PersistableBundle
 import android.widget.Toast
 import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,9 +39,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.futo.inputmethod.latin.R
+import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.uix.Action
 import org.futo.inputmethod.latin.uix.ActionTextEditor
 import org.futo.inputmethod.latin.uix.ActionWindow
@@ -61,7 +65,14 @@ private class AiPolishWindow(
     private val client: AiPolishClient,
 ) : ActionWindow() {
     private val context: Context = manager.getContext()
-    private val source = pickSource(manager.getSelectedText(), manager.getAllText())
+
+    /** Password fields must never be read into the window, let alone sent to the API. */
+    private val sensitiveField: Boolean =
+        Settings.getInstance().current?.mInputAttributes?.mIsPasswordField == true
+
+    private val source =
+        if (sensitiveField) Source("", SourceKind.None)
+        else pickSource(manager.getSelectedText(), manager.getAllText())
 
     val prompt: MutableState<String> = mutableStateOf(context.getSetting(AiPolishSettings.Prompt))
     val text: MutableState<String> = mutableStateOf(source.text)
@@ -72,21 +83,28 @@ private class AiPolishWindow(
     // hosts it; None while switching so the outgoing editor's unsetInputConnection()
     // cannot clobber the incoming editor's override.
     val editorSlot: MutableState<EditorSlot> = mutableStateOf(EditorSlot.Text)
-    private var switchJob: Job? = null
 
     private var job: Job? = null
 
-    /** Unmount the current editor first; mount the target one on a later frame so the old
-     *  editor's unsetInputConnection() cannot clobber the new editor's override. */
+    private var pendingSlot: EditorSlot? = null
+
+    /** Unmount the current editor; the target is mounted from afterUnOverride, i.e. only after
+     *  the old editor has released the input connection override. */
     private fun switchEditor(target: EditorSlot) {
-        if (editorSlot.value == target) return
-        switchJob?.cancel()
-        editorSlot.value = EditorSlot.None
-        switchJob = manager.getLifecycleScope().launch {
-            // withFrameNanos requires a MonotonicFrameClock, which the lifecycle scope's
-            // dispatcher does not provide, so use a short delay to let the outgoing
-            // editor's disposal effects run on a later frame instead.
-            delay(32)
+        if (editorSlot.value == target || pendingSlot == target) return
+        pendingSlot = target
+        if (editorSlot.value == EditorSlot.None) {
+            // Nothing mounted (e.g. a previous switch was interrupted): mount directly.
+            editorSlot.value = target
+            pendingSlot = null
+        } else {
+            editorSlot.value = EditorSlot.None
+        }
+    }
+
+    private fun onEditorReleased() {
+        pendingSlot?.let { target ->
+            pendingSlot = null
             editorSlot.value = target
         }
     }
@@ -126,13 +144,19 @@ private class AiPolishWindow(
     private fun copy() {
         val result = resultOrNull() ?: return
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("AI Polish", result))
+        val clip = ClipData.newPlainText("AI Polish", result)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Keep the polished text out of the clipboard preview/history UI.
+            clip.description.extras = PersistableBundle().apply {
+                putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+            }
+        }
+        clipboard.setPrimaryClip(clip)
         Toast.makeText(context, R.string.action_ai_polish_copied, Toast.LENGTH_SHORT).show()
     }
 
     override fun close(): CloseResult {
         job?.cancel()
-        switchJob?.cancel()
         return CloseResult.Default
     }
 
@@ -143,8 +167,13 @@ private class AiPolishWindow(
 
     @Composable
     private fun RowScope.PolishButton(@StringRes label: Int, enabled: Boolean, onClick: () -> Unit) {
-        Button(onClick = onClick, enabled = enabled, modifier = Modifier.weight(1f)) {
-            Text(stringResource(label))
+        Button(
+            onClick = onClick,
+            enabled = enabled,
+            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(stringResource(label), maxLines = 1, softWrap = false)
         }
     }
 
@@ -190,6 +219,7 @@ private class AiPolishWindow(
                         text = prompt,
                         multiline = true,
                         autofocus = true,
+                        afterUnOverride = { onEditorReleased() },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp),
@@ -214,6 +244,7 @@ private class AiPolishWindow(
                         text = text,
                         multiline = true,
                         autofocus = false,
+                        afterUnOverride = { onEditorReleased() },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(80.dp),
@@ -241,7 +272,10 @@ private class AiPolishWindow(
             ) {
                 when (val s = state.value) {
                     PolishState.Idle -> Text(
-                        stringResource(R.string.action_ai_polish_result_placeholder),
+                        stringResource(
+                            if (sensitiveField) R.string.action_ai_polish_sensitive_field
+                            else R.string.action_ai_polish_result_placeholder
+                        ),
                         color = scheme.onSurfaceVariant
                     )
                     PolishState.Loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))

@@ -512,6 +512,8 @@ Claude-Session: https://claude.ai/code/session_01Bf6fw8NunnbSZZsKThHxbZ"
 
 ### Task 4: 面板 UI 與註冊
 
+> 實作與此草稿的差異：同一時刻只掛載一個 `ActionTextEditor`（`EditorSlot` + `afterUnOverride` 切換）；密碼欄位不預填。以 spec 為準。
+
 **Files:**
 - Create: `java/src/org/futo/inputmethod/latin/uix/actions/aipolish/AiPolishAction.kt`
 - Modify: `java/src/org/futo/inputmethod/latin/uix/actions/Registry.kt`（`AllActionsMap` 末尾、`DefaultActionSettings` Favorites 末尾）

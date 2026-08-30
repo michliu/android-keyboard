@@ -66,6 +66,30 @@ class AiPolishClientTest {
     }
 
     @Test
+    fun rejectsBlankBaseUrlOnly() = runBlocking {
+        val transport = RecordingTransport(TransportResponse(200, "{}"))
+        val result = AiPolishClient(transport).polish(PolishConfig("", "sk-test", "m"), "p", "t")
+        assertEquals(AiPolishClient.NOT_CONFIGURED, result.exceptionOrNull()!!.message)
+        assertEquals(null, transport.url)
+    }
+
+    @Test
+    fun rejectsBlankApiKeyOnly() = runBlocking {
+        val transport = RecordingTransport(TransportResponse(200, "{}"))
+        val result = AiPolishClient(transport)
+            .polish(PolishConfig("https://example.com/v1", "", "m"), "p", "t")
+        assertEquals(AiPolishClient.NOT_CONFIGURED, result.exceptionOrNull()!!.message)
+        assertEquals(null, transport.url)
+    }
+
+    @Test
+    fun truncatesLongNonJsonErrorBody() = runBlocking {
+        val transport = RecordingTransport(TransportResponse(500, "x".repeat(300)))
+        val result = AiPolishClient(transport).polish(config, "p", "t")
+        assertEquals("HTTP 500: " + "x".repeat(200), result.exceptionOrNull()!!.message)
+    }
+
+    @Test
     fun wrapsTransportExceptions() = runBlocking {
         val transport = PolishTransport { _, _, _ -> throw java.io.IOException("Unable to resolve host") }
         val result = AiPolishClient(transport).polish(config, "p", "t")

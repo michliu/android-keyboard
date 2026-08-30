@@ -45,7 +45,7 @@ class AiPolishClient(private val transport: PolishTransport) {
         const val NOT_CONFIGURED = "Set the API base URL and API key in AI Polish settings first"
         const val UNPARSABLE = "The server response could not be parsed"
         private const val TEMPERATURE = 0.3
-        private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+        private val json = Json { ignoreUnknownKeys = true }
     }
 
     suspend fun polish(config: PolishConfig, prompt: String, text: String): Result<String> {
