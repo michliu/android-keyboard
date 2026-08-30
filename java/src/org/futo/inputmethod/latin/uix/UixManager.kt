@@ -15,6 +15,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InlineSuggestionsResponse
 import android.view.inputmethod.InputConnection
 import android.widget.Toast
@@ -525,6 +526,21 @@ class UixActionKeyboardManager(val uixManager: UixManager, val latinIME: LatinIM
         latinIME.sizingCalculator
 
     override fun getLatinIMEForDebug(): LatinIME = latinIME
+
+    override fun getSelectedText(): String? =
+        latinIME.getBaseInputConnection()?.getSelectedText(0)?.toString()
+
+    override fun getAllText(): String? =
+        latinIME.getBaseInputConnection()?.getExtractedText(ExtractedTextRequest(), 0)?.text?.toString()
+
+    override fun replaceAllText(text: String) {
+        val ic = latinIME.getBaseInputConnection() ?: return
+        val length = getAllText()?.length ?: 0
+        ic.beginBatchEdit()
+        ic.setSelection(0, length)
+        ic.commitText(text, 1)
+        ic.endBatchEdit()
+    }
 
     override fun getCurrentIME(): IMEInterface {
         return latinIME.imeManager.getActiveIME(Settings.getInstance().current)

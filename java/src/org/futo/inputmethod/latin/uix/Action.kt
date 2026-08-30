@@ -106,6 +106,13 @@ interface KeyboardManagerForAction {
     fun copyToClipboard(cut: Boolean = false)
     fun pasteFromClipboard()
 
+    /** Selected text of the real editor (not an overriding action text field), or null. */
+    fun getSelectedText(): String?
+    /** Entire text of the real editor, or null if unavailable. */
+    fun getAllText(): String?
+    /** Atomically replaces the entire text of the real editor. */
+    fun replaceAllText(text: String)
+
     // Returns null if the current IME is not of this kind.
     // TODO: In the future make an IMEActionInterface for correctness
     fun getCurrentIME(): IMEInterface
