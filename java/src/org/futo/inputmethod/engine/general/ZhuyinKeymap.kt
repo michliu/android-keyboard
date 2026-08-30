@@ -34,7 +34,7 @@ object ZhuyinKeymap {
      * Whether a code point typed on the Zhuyin page (or its symbols page) must be committed
      * directly instead of being sent to Rime: the bopomofo schema would read ASCII letters,
      * digits and its speller punctuation (`, . ; / -`) as Zhuyin keys. Other ASCII punctuation
-     * is left to Rime so its punctuator can produce full-width Chinese punctuation.
+     * is left to Rime's punctuator, exactly as on the pinyin layout.
      */
     fun bypassesRime(codePoint: Int): Boolean {
         if (codePoint < 0 || codePoint > Char.MAX_VALUE.code) return false

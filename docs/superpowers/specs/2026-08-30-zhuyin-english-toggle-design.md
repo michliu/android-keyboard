@@ -18,8 +18,9 @@
     ASCII 可見字元與空白直接上屏；退格／Enter 在組字上屏後走一般路徑。
   - **注音頁與 `?123` 頁**：注音鍵只會產生 Unicode 注音符號，因此 ASCII 字母、數字與方案的拼寫標點
     `, . ; / -`（`ZhuyinKeymap.bypassesRime`）不送 Rime、直接上屏——這修正 `?123` 頁的 `,` 等被當成注音鍵
-    （ㄝ ㄡ ㄤ ㄥ ㄦ）組字的問題；其他 ASCII 標點（`! ? " ( )` …）仍送 Rime，由 punctuator 轉成全形，
-    與拼音布局一致。
+    （ㄝ ㄡ ㄤ ㄥ ㄦ）組字的問題；其他 ASCII 標點（`! ? " ( )` …）仍送 Rime 交給 punctuator，
+    與拼音布局一致（zidian 的 `punctuation.yaml` 把半形標點映射為自身，因此實際上仍是半形；全形標點由布局上的
+    「，」「。」與長按鍵提供）。
 - 空白、Enter、退格在注音頁維持既有路徑（空白在組字中仍是一聲／選字）。
 
 ## 布局變更（`java/assets/layouts/Chinese/zh_bopomofo.yaml`，子模組分支 `zhuyin-layout`）

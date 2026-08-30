@@ -870,7 +870,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             // emit Zhuyin symbols; hardware keyboards are disabled by
             // ProductionFlags.IS_HARDWARE_KEYBOARD_SUPPORTED); they come from the symbols page or
             // number row and must not reach Rime, which would read them as Zhuyin keys. Other
-            // punctuation still goes to Rime for full-width conversion.
+            // punctuation still goes to Rime so its punctuator decides how to commit it (the
+            // bundled dictionary passes it through unchanged, like the pinyin layout).
             coroScope.launch {
                 val composing = rawInput.text.isNotEmpty() || rime.preeditFlow.value.isNotEmpty()
                 rawInput.clear()
