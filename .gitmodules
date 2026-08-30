@@ -7,7 +7,7 @@
 [submodule "java/assets/layouts"]
 	path = java/assets/layouts
 	url = https://github.com/michliu/futo-keyboard-layouts.git
-	branch = zhuyin-layout
+	branch = main
 [submodule "translations"]
 	path = translations
 	url = https://gitlab.futo.org/keyboard/keyboard-translations-public.git
