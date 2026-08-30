@@ -26,6 +26,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -271,6 +272,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             'n' to '⼂',
             'z' to '⼄',
         )
+
+        /** How many times a failed schema selection is retried before giving up. */
+        private const val MaxSchemaSelectRetries = 3
+        private const val SchemaSelectRetryDelayMs = 2000L
 
         @JvmStatic
         fun getRimeDir(context: Context) = context.getExternalFilesDir("rime")
@@ -574,6 +579,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         val fuzzyMode: Set<ChineseIMESettings.FuzzyPinyinModes>
     )
     private var prevConfiguration: Configuration? = null
+    private var schemaSelectRetries = 0
 
     private fun writeCustomizationFile(cfg: Configuration) {
         val schema = cfg.schema
@@ -676,13 +682,25 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                         Thread.sleep(300L)
                     }
 
-                    if(!result) {
-                        Log.e(TAG, "Failed to select schema 3s after deployment!")
-                    }
-
                     rime.setOption("simplification", simplified)
                     rime.setOption("traditional", !simplified)
-                    prevConfiguration = config
+
+                    if(result) {
+                        prevConfiguration = config
+                        schemaSelectRetries = 0
+                    } else {
+                        Log.e(TAG, "Failed to select schema 3s after deployment!")
+                        // Leave prevConfiguration untouched so the next onStartInput retries, and
+                        // retry a bounded number of times ourselves: after the user directory was
+                        // wiped every schema has to be rebuilt, which can take longer than 3s.
+                        if(schemaSelectRetries < MaxSchemaSelectRetries) {
+                            schemaSelectRetries++
+                            coroScope.launch {
+                                delay(SchemaSelectRetryDelayMs)
+                                updateConfig()
+                            }
+                        }
+                    }
                 }
             } finally {
                 configSemaphore.release()
@@ -1006,15 +1024,26 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         Log.d(TAG, "Clearing Chinese dictionary...")
 
         coroScope.launch {
-            rime.shutdown()
-            getUser(helper.context).let {
-                it.deleteRecursively()
-                it.mkdirs()
+            // Hold the config semaphore so a concurrent updateConfig() cannot write its custom
+            // file or select a schema while Rime is shut down and the user directory is wiped.
+            configSemaphore.acquire()
+            try {
+                rime.shutdown()
+                getUser(helper.context).let {
+                    it.deleteRecursively()
+                    it.mkdirs()
+                }
+                // The user directory held the bundled default.custom.yaml; restore it before Rime restarts.
+                BundledRimeAssets.ensure(helper.context, getShared(helper.context), getUser(helper.context))
+                rime.startup(false)
+                prevConfiguration = null
+                schemaSelectRetries = 0
+            } finally {
+                configSemaphore.release()
             }
-            // The user directory held the bundled default.custom.yaml; restore it before Rime restarts.
-            BundledRimeAssets.ensure(helper.context, getShared(helper.context), getUser(helper.context))
-            rime.startup(false)
-            prevConfiguration = null
+            // The compiled schemas were wiped with the user directory; re-select the schema for
+            // the current layout now that Rime is back.
+            updateConfig()
         }
     }
 
