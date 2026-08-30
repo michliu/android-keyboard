@@ -756,17 +756,22 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
      * keys of the standard keyboard; ASCII digits (from the number row) bypass Rime because the
      * schema would interpret them as Zhuyin keys; space is tone 1 while composing.
      *
-     * Rime state is read and [rawInput] is mutated inside the launched coroutine so that the
-     * decisions stay ordered after key coroutines that were queued earlier.
+     * Per-key coroutines only stay in order up to their first suspension point, so Rime's
+     * preedit may lag behind fast typing. [rawInput] is updated before any suspension and is
+     * therefore used as the source of truth for "is a syllable being composed".
      *
      * @return true if the key was fully handled.
      */
     private fun handleBopomofoKey(codePoint: Int): Boolean {
         ZhuyinKeymap.rimeKeyFor(codePoint)?.let { key ->
             coroScope.launch {
-                // A tone without a syllable is not an initial in the schema; Rime would pass it
-                // back and it would be committed as a literal digit. Ignore it instead.
-                if(ZhuyinKeymap.isToneKey(key) && rime.preeditFlow.value.isEmpty()) return@launch
+                // A tone with no syllable, or a second tone on an already toned syllable, is not
+                // an initial in the schema; Rime would pass it back and it would be committed as
+                // a literal digit. Ignore it instead.
+                if(ZhuyinKeymap.isToneKey(key) &&
+                    (rawInput.text.isEmpty() || ZhuyinKeymap.isToneKey(rawInput.text.lastOrNull()))) {
+                    return@launch
+                }
                 rawInput.append(key.code)
                 rime.processX11Code(key.code)
             }
@@ -775,8 +780,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
         if(codePoint in '0'.code..'9'.code) {
             coroScope.launch {
+                val composing = rawInput.text.isNotEmpty() || rime.preeditFlow.value.isNotEmpty()
                 rawInput.clear()
-                if(rime.preeditFlow.value.isNotEmpty()) rime.commitComposition()
+                if(composing) rime.commitComposition()
                 connect?.commitText(String(Character.toChars(codePoint)), 1)
             }
             return true
@@ -785,7 +791,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         if(codePoint == ' '.code) {
             coroScope.launch {
                 when {
-                    rime.preeditFlow.value.isEmpty() -> {
+                    rawInput.text.isEmpty() && rime.preeditFlow.value.isEmpty() -> {
                         // Not composing: behave like the generic path (a plain space).
                         rawInput.clear()
                         rime.processX11Code(' '.code)

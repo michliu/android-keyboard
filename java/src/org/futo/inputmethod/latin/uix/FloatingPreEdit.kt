@@ -154,12 +154,16 @@ fun FloatingPreEditView(
             }
             .background(Color.Companion.Gray.copy(alpha = 0.7f))
             .clickable {
-                // Reject editing if there are already any Chinese characters in here. Only Pinyin editing supported
-                if (preedit.entries.all { it.normalized.all { it in 'a'..'z' || it in 'A'..'Z' || it == ' ' } }) {
+                // Reject editing if there are already any Chinese characters in here. Only raw
+                // Rime keys (ASCII letters, space, or keys the layout's transformation knows) are editable.
+                if (preedit.entries.all { entry ->
+                        entry.normalized.all { it in 'a'..'z' || it in 'A'..'Z' || it == ' ' || it in preedit.transformation }
+                    }) {
                     preedit.listener.onStartEdit()
                     editing.value = true
-                    editingText.value =
+                    editingText.value = preedit.transform(
                         preedit.entries.joinToString(separator = " ") { it.normalized }
+                    )
                 }
             }
             .padding(4.dp)) {
