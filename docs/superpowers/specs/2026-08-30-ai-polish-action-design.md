@@ -50,8 +50,10 @@ LLM 走遠端 OpenAI 相容的 chat completions API（Base URL、API Key、Model
 ### 3. 面板（`AiPolishWindow : ActionWindow`）
 
 - `Action(canShowKeyboard = true, windowImpl = …)`，面板 `onlyShowAboveKeyboard = false`，顯示關閉鈕。
-- 限制：`LatinIME` 只有一個 InputConnection 覆寫槽位，`ActionTextEditor` 進入組合時就會覆寫，因此**同一時刻只能掛載一個
-  `ActionTextEditor`**（仓庫中沒有兩個編輯器同屏的先例）。
+- 限制：`LatinIME` 只有一個 InputConnection 覆寫槽位，`ActionTextEditor` 進入組合時就會覆寫、dispose 時才解除，因此
+  **同一時刻只能掛載一個 `ActionTextEditor`**，且切換必須分兩步：先把槽位設為 `None` 卸載目前的編輯器，
+  下一拍（`delay(32)`）再掛載目標編輯器；若在同一次重組中換掉，新編輯器的覆寫會被舊編輯器的解除清掉
+  （真機實測：鍵盤輸入落到宿主輸入框）。
 - 版面（Column，三區都可見）：
   1. Prompt：預設以只讀文字顯示（點擊或按「Edit」進入編輯），編輯時掛載多行 `ActionTextEditor`（`autofocus = true`），
      按「Done」結束；右側「重設」鈕恢復設定值。
