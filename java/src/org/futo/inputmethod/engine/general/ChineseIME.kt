@@ -38,6 +38,7 @@ import org.futo.inputmethod.engine.IMEHelper
 import org.futo.inputmethod.engine.IMEInterface
 import org.futo.inputmethod.engine.IMEMessage
 import org.futo.inputmethod.event.Event
+import org.futo.inputmethod.keyboard.internal.KeyboardLayoutKind
 import org.futo.inputmethod.latin.R
 import org.futo.inputmethod.latin.Subtypes.switchToNextLanguage
 import org.futo.inputmethod.latin.SuggestedWords
@@ -249,6 +250,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     override fun getLoadingState(): MutableState<Boolean>? = rimeLoading
 
     private val isBopomofo get() = layoutHint == "bopomofo"
+
+    /** True while the Zhuyin layout's embedded English page (sub-keyboard Alphabet1) is shown. */
+    private val isOnEnglishPage get() =
+        isBopomofo && helper.keyboardSwitcher.keyboard?.mId?.mElement?.kind == KeyboardLayoutKind.Alphabet1
 
     private val currentTransformation get() = when(layoutHint) {
         "stroke" -> StrokeTransformation
@@ -813,10 +818,30 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     /**
+     * Key handling for the English page embedded in the Zhuyin layout: keys are plain text and
+     * never edit a Zhuyin composition. A composition left pending when the user switched pages
+     * is committed first.
+     *
+     * @return true if the key was fully handled; false lets backspace/enter take the generic path
+     *         (after the pending composition, if any, was committed).
+     */
+    private fun handleEnglishPageKey(event: Event): Boolean {
+        val composing = rawInput.text.isNotEmpty()
+        rawInput.clear()
+        val codePoint = if (event.mKeyCode == Event.NOT_A_KEY_CODE) event.mCodePoint else -1
+        val text = if (codePoint in 0x20..0x7E) String(Character.toChars(codePoint)) else null
+        coroScope.launch {
+            if (composing || rime.preeditFlow.value.isNotEmpty()) rime.commitComposition()
+            if (text != null) connect?.commitText(text, 1)
+        }
+        return text != null
+    }
+
+    /**
      * Key handling specific to the Zhuyin layout. Zhuyin symbols are translated to the ASCII
-     * keys of the standard keyboard; printable ASCII (English page, symbols page, number row)
-     * bypasses Rime because the schema would interpret it as Zhuyin keys; space is tone 1 while
-     * composing.
+     * keys of the standard keyboard; ASCII letters, digits and the speller punctuation (symbols
+     * page, number row) bypass Rime because the schema would interpret them as Zhuyin keys;
+     * other punctuation is left to Rime's punctuator; space is tone 1 while composing.
      *
      * Per-key coroutines only stay in order up to their first suspension point, so Rime's
      * preedit may lag behind fast typing. [rawInput] is updated before any suspension and is
@@ -840,10 +865,12 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             return true
         }
 
-        if(codePoint in 0x21..0x7E) {
-            // Printable ASCII never comes from the Zhuyin keys (they emit Zhuyin symbols); it is
-            // typed on the English page or the symbols page and must not reach Rime, which
-            // would read it as Zhuyin keys.
+        if(ZhuyinKeymap.bypassesRime(codePoint)) {
+            // Letters, digits and the speller punctuation never come from the Zhuyin keys (which
+            // emit Zhuyin symbols; hardware keyboards are disabled by
+            // ProductionFlags.IS_HARDWARE_KEYBOARD_SUPPORTED); they come from the symbols page or
+            // number row and must not reach Rime, which would read them as Zhuyin keys. Other
+            // punctuation still goes to Rime for full-width conversion.
             coroScope.launch {
                 val composing = rawInput.text.isNotEmpty() || rime.preeditFlow.value.isNotEmpty()
                 rawInput.clear()
@@ -886,8 +913,12 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             Event.EVENT_TYPE_INPUT_KEYPRESS_RESUMED -> {
                 if (triggerIfIsAction(event.mKeyCode))
                     return
-                if(isBopomofo && !editingState.active && event.mKeyCode == Event.NOT_A_KEY_CODE) {
-                    if(handleBopomofoKey(event.mCodePoint)) return
+                if(isBopomofo && !editingState.active) {
+                    if(isOnEnglishPage) {
+                        if(handleEnglishPageKey(event)) return
+                    } else if(event.mKeyCode == Event.NOT_A_KEY_CODE) {
+                        if(handleBopomofoKey(event.mCodePoint)) return
+                    }
                 }
                 val x11Code = when (event.mKeyCode) {
                     Constants.CODE_DELETE -> '\b'.code

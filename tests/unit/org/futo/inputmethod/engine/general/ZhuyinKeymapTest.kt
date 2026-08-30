@@ -47,6 +47,26 @@ class ZhuyinKeymapTest {
     }
 
     @Test
+    fun bypassesRimeOnlyForLettersDigitsAndSpellerPunctuation() {
+        assertTrue(ZhuyinKeymap.bypassesRime('a'.code))
+        assertTrue(ZhuyinKeymap.bypassesRime('Z'.code))
+        assertTrue(ZhuyinKeymap.bypassesRime('5'.code))
+        assertTrue(ZhuyinKeymap.bypassesRime(','.code))
+        assertTrue(ZhuyinKeymap.bypassesRime('.'.code))
+        assertTrue(ZhuyinKeymap.bypassesRime(';'.code))
+        assertTrue(ZhuyinKeymap.bypassesRime('/'.code))
+        assertTrue(ZhuyinKeymap.bypassesRime('-'.code))
+
+        assertFalse(ZhuyinKeymap.bypassesRime(' '.code))
+        assertFalse(ZhuyinKeymap.bypassesRime('!'.code))
+        assertFalse(ZhuyinKeymap.bypassesRime('?'.code))
+        assertFalse(ZhuyinKeymap.bypassesRime('('.code))
+        assertFalse(ZhuyinKeymap.bypassesRime('"'.code))
+        assertFalse(ZhuyinKeymap.bypassesRime('ㄅ'.code))
+        assertFalse(ZhuyinKeymap.bypassesRime(0x1F600))
+    }
+
+    @Test
     fun toneKeys() {
         " 6347".forEach { assertTrue("$it", ZhuyinKeymap.isToneKey(it)) }
         assertFalse(ZhuyinKeymap.isToneKey('1'))

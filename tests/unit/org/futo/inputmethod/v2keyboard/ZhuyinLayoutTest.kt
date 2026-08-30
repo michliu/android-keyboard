@@ -2,7 +2,6 @@ package org.futo.inputmethod.v2keyboard
 
 import org.futo.inputmethod.keyboard.internal.KeyboardLayoutKind
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -41,10 +40,17 @@ class ZhuyinLayoutTest {
         val mainBottom = keyboard.getEffectiveRows(0).first { it.isBottomRow }
         assertTrue(mainBottom.keys.filterIsInstance<BaseKey>().any { it.code == -20 && it.spec.startsWith("英") })
 
-        val english = keyboard.subKeyboards[KeyboardLayoutKind.Alphabet1]
-        assertNotNull(english)
-        val letterRows = english!!.rows.filter { it.isLetterRow }
+        val english = requireNotNull(keyboard.subKeyboards[KeyboardLayoutKind.Alphabet1])
+        val letterRows = english.rows.filter { it.isLetterRow }
         assertEquals(listOf(10, 9, 9), letterRows.map { it.keys.size })
+
+        fun specs(row: Row) = row.keys.filterIsInstance<BaseKey>().map { it.spec }
+        assertEquals("q w e r t y u i o p".split(" "), specs(letterRows[0]))
+        assertEquals("a s d f g h j k l".split(" "), specs(letterRows[1]))
+        // Row 3 also carries the non-BaseKey shift and delete entries.
+        assertEquals("z x c v b n m".split(" "), specs(letterRows[2]))
+        assertEquals(9, letterRows[2].keys.size)
+
         val englishBottom = english.rows.first { it.isBottomRow }
         assertTrue(englishBottom.keys.filterIsInstance<BaseKey>().any { it.code == -19 && it.spec.startsWith("中") })
     }

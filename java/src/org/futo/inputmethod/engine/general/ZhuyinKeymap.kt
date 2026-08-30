@@ -30,6 +30,18 @@ object ZhuyinKeymap {
         return toRimeKey[codePoint.toChar()]
     }
 
+    /**
+     * Whether a code point typed on the Zhuyin page (or its symbols page) must be committed
+     * directly instead of being sent to Rime: the bopomofo schema would read ASCII letters,
+     * digits and its speller punctuation (`, . ; / -`) as Zhuyin keys. Other ASCII punctuation
+     * is left to Rime so its punctuator can produce full-width Chinese punctuation.
+     */
+    fun bypassesRime(codePoint: Int): Boolean {
+        if (codePoint < 0 || codePoint > Char.MAX_VALUE.code) return false
+        val c = codePoint.toChar()
+        return c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || (c != ' ' && c in alphabet)
+    }
+
     /** Whether [c] is one of the tone keys (space, 6, 3, 4, 7). */
     fun isToneKey(c: Char?): Boolean = c != null && c in TONE_KEYS
 }
