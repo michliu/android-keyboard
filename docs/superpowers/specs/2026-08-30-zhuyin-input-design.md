@@ -64,12 +64,13 @@
   ```yaml
   luna_tones:
     __append:
-      - derive/$/1/
-      - derive/$/2/
-      - derive/$/3/
-      - derive/$/4/
-      - derive/$/5/
+      - derive/^(.+)$/${1}1/
+      - derive/^(.+)$/${1}2/
+      - derive/^(.+)$/${1}3/
+      - derive/^(.+)$/${1}4/
+      - derive/^(.+)$/${1}5/
   ```
+  （用 `${1}` 而非 `$11`：librime 以 boost::regex 解析，`$11` 會被當成第 11 個捕獲組。）
   讓無聲調音節可接受任意聲調後綴（聲調只作為音節分隔，不影響候選）。
   `luna_tones` 必須排在 `abbreviation` 之前、`pinyin_to_zhuyin` 之後。
 - `futo_bopomofo.schema.yaml`：
@@ -102,7 +103,8 @@
       - schema: futo_bopomofo_terra
   ```
   此檔寫入 Rime **user** 目錄（Rime 只在 user/shared 目錄尋找 `default.custom.yaml`，
-  且 user 目錄清除後由 `BundledRimeAssets` 重寫）。`terra_pinyin` 詞庫不存在時
+  且 user 目錄清除後由 `BundledRimeAssets` 重寫）。已知限制：Rime 只取 user 目錄中的
+  `default.custom.yaml`，若詞庫 zip 日後自帶同名檔（zidian v26.02 沒有），會被本檔遮蔽。`terra_pinyin` 詞庫不存在時
   `futo_bopomofo_terra` 部署失敗只會記錄錯誤，與 zidian 既有的不存在方案行為一致。
 
 ### 3. `BundledRimeAssets`（新檔 `engine/general/BundledRimeAssets.kt`）
@@ -135,8 +137,11 @@
   過濾——`"bopomofo"` 時保留 `ZhuyinKeymap.alphabet` 中的字元，其他 hint 維持只留 ASCII 字母。
 - `onEvent` 的 `EVENT_TYPE_INPUT_KEYPRESS` 在 `"bopomofo"` hint 下：
   - 注音字元（`ZhuyinKeymap.toRimeKey` 含有）→ 轉為 ASCII 鍵後送 `rime.processX11Code`，並 `rawInput.append(ASCII 鍵)`；
-    但聲調鍵在 Rime 預編輯為空時直接忽略（聲調不是方案的 initial，Rime 會直通並打出數字）。
-  - 以上判斷（讀 `rime.preeditFlow.value`、改 `rawInput`）都在送鍵的 coroutine 內進行，與先前排隊的按鍵保持 FIFO。
+    但聲調鍵在沒有音節（`rawInput` 為空）或音節已有聲調時直接忽略（聲調不是方案的 initial，Rime 會直通並打出數字）。
+  - 「是否正在組字」以 `rawInput` 為準（在 coroutine 首個掛起點前更新，因此與先前排隊的按鍵保持 FIFO），
+    `rime.preeditFlow` 只作輔助判斷，因為它在快速連打時會落後。
+- `FloatingPreEdit` 進入編輯的門控除 ASCII 字母／空白外，也接受 `transformation` 映射中的鍵；
+  編輯框初值經 `transform` 顯示為注音。
   - ASCII 數字 `0-9` → 不送 Rime；若 Rime 有預編輯則先 `rime.commitComposition()`，再 `commitText(數字)`（即 `handlePassByMessage` 的既有路徑）。
   - 空白：Rime 預編輯非空且 `rawInput` 最後一鍵不是聲調時，作為一聲送 Rime 並 `rawInput.append(' ')`；
     最後一鍵已是聲調（` 6347`）時，選取第一個候選（`rime.selectCandidate(0)`，失敗則 `commitComposition`），
