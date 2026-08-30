@@ -720,5 +720,7 @@ Default is %1$s</string>
     <string name="action_ai_polish_insert">Insert</string>
     <string name="action_ai_polish_copy">Copy</string>
     <string name="action_ai_polish_reset">Reset</string>
+    <string name="action_ai_polish_edit_prompt">Edit</string>
+    <string name="action_ai_polish_done">Done</string>
     <string name="action_ai_polish_copied">Copied</string>
 </resources>

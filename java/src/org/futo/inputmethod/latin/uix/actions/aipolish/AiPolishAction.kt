@@ -4,18 +4,25 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.annotation.StringRes
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -23,7 +30,9 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -54,6 +63,11 @@ private class AiPolishWindow(
     val prompt: MutableState<String> = mutableStateOf(context.getSetting(AiPolishSettings.Prompt))
     val text: MutableState<String> = mutableStateOf(source.text)
     val state: MutableState<PolishState> = mutableStateOf(PolishState.Idle)
+
+    // LatinIME only has a single input connection override slot, so at most one
+    // ActionTextEditor may be mounted at a time. This flag decides which one.
+    val editingPrompt: MutableState<Boolean> = mutableStateOf(false)
+
     private var job: Job? = null
 
     @Composable
@@ -101,8 +115,25 @@ private class AiPolishWindow(
     }
 
     @Composable
-    private fun Label(textRes: Int) {
+    private fun Label(@StringRes textRes: Int) {
         Text(stringResource(textRes), style = Typography.Small, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
+    }
+
+    @Composable
+    private fun RowScope.PolishButton(@StringRes label: Int, enabled: Boolean, onClick: () -> Unit) {
+        Button(onClick = onClick, enabled = enabled, modifier = Modifier.weight(1f)) {
+            Text(stringResource(label))
+        }
+    }
+
+    @Composable
+    private fun Bordered(content: @Composable () -> Unit) {
+        Surface(
+            border = BorderStroke(1.dp, LocalKeyboardScheme.current.outline),
+            shape = RoundedCornerShape(8.dp),
+            color = Color.Transparent,
+            modifier = Modifier.fillMaxWidth()
+        ) { content() }
     }
 
     @Composable
@@ -116,34 +147,70 @@ private class AiPolishWindow(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Label(R.string.action_ai_polish_prompt_label)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { editingPrompt.value = !editingPrompt.value }) {
+                    Text(
+                        stringResource(
+                            if (editingPrompt.value) R.string.action_ai_polish_done
+                            else R.string.action_ai_polish_edit_prompt
+                        )
+                    )
+                }
                 TextButton(onClick = { prompt.value = context.getSetting(AiPolishSettings.Prompt) }) {
                     Text(stringResource(R.string.action_ai_polish_reset))
                 }
             }
-            ActionTextEditor(
-                text = prompt,
-                multiline = true,
-                autofocus = false,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(64.dp),
-            )
+            Bordered {
+                if (editingPrompt.value) {
+                    ActionTextEditor(
+                        text = prompt,
+                        multiline = true,
+                        autofocus = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp),
+                    )
+                } else {
+                    Text(
+                        prompt.value,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { editingPrompt.value = true }
+                            .padding(4.dp)
+                    )
+                }
+            }
 
             Label(R.string.action_ai_polish_source_label)
-            ActionTextEditor(
-                text = text,
-                multiline = true,
-                autofocus = false,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(96.dp),
-            )
+            Bordered {
+                if (!editingPrompt.value) {
+                    ActionTextEditor(
+                        text = text,
+                        multiline = true,
+                        autofocus = false,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(80.dp),
+                    )
+                } else {
+                    Text(
+                        text.value,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(4.dp)
+                    )
+                }
+            }
 
             Label(R.string.action_ai_polish_result_label)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(96.dp)
+                    .height(80.dp)
                     .padding(4.dp),
                 contentAlignment = Alignment.TopStart
             ) {
@@ -159,7 +226,13 @@ private class AiPolishWindow(
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState())
                     )
-                    is PolishState.Error -> Text(s.message, color = scheme.error)
+                    is PolishState.Error -> Text(
+                        s.message,
+                        color = scheme.error,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                    )
                 }
             }
 
@@ -170,20 +243,14 @@ private class AiPolishWindow(
                     .padding(vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Button(
-                    onClick = { run() },
+                PolishButton(
+                    label = R.string.action_ai_polish_run,
                     enabled = text.value.isNotBlank() && state.value !is PolishState.Loading,
-                    modifier = Modifier.weight(1f)
-                ) { Text(stringResource(R.string.action_ai_polish_run)) }
-                Button(onClick = { replace() }, enabled = hasResult, modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.action_ai_polish_replace))
-                }
-                Button(onClick = { insert() }, enabled = hasResult, modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.action_ai_polish_insert))
-                }
-                Button(onClick = { copy() }, enabled = hasResult, modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.action_ai_polish_copy))
-                }
+                    onClick = { run() },
+                )
+                PolishButton(R.string.action_ai_polish_replace, hasResult) { replace() }
+                PolishButton(R.string.action_ai_polish_insert, hasResult) { insert() }
+                PolishButton(R.string.action_ai_polish_copy, hasResult) { copy() }
             }
         }
     }
