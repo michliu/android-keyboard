@@ -831,6 +831,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         val codePoint = if (event.mKeyCode == Event.NOT_A_KEY_CODE) event.mCodePoint else -1
         val text = if (codePoint in 0x20..0x7E) String(Character.toChars(codePoint)) else null
         coroScope.launch {
+            // The preedit check is load-bearing: rawInput is cleared synchronously, so a second
+            // key typed while the first flush is still suspended must also wait on Rime here,
+            // otherwise its text would be committed ahead of the first key's.
             if (composing || rime.preeditFlow.value.isNotEmpty()) rime.commitComposition()
             if (text != null) connect?.commitText(text, 1)
         }
