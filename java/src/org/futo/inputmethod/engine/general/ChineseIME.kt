@@ -400,9 +400,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         editingState = EditingState.Editing
     }
 
-    // This assumes that the only valid characters for input simulation are ASCII letters
-    // In particular, some characters like space will break the input by ending composition
-    // (Maybe there are other valid symbols potentially?)
+    // For pinyin/stroke layouts the only valid characters for input simulation are ASCII letters;
+    // in particular space would end the composition. The Zhuyin schema instead accepts every key
+    // of its alphabet, including space (tone 1), so the filter depends on the layout hint.
     private fun safeguardInputStringForSimulation(input: String): String = when {
         isBopomofo -> input.filter { it in ZhuyinKeymap.alphabet }
         else -> input.filter { it in 'a'..'z' || it in 'A'..'Z' }
@@ -756,37 +756,51 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
      * keys of the standard keyboard; ASCII digits (from the number row) bypass Rime because the
      * schema would interpret them as Zhuyin keys; space is tone 1 while composing.
      *
+     * Rime state is read and [rawInput] is mutated inside the launched coroutine so that the
+     * decisions stay ordered after key coroutines that were queued earlier.
+     *
      * @return true if the key was fully handled.
      */
     private fun handleBopomofoKey(codePoint: Int): Boolean {
         ZhuyinKeymap.rimeKeyFor(codePoint)?.let { key ->
-            rawInput.append(key.code)
-            coroScope.launch { rime.processX11Code(key.code) }
+            coroScope.launch {
+                // A tone without a syllable is not an initial in the schema; Rime would pass it
+                // back and it would be committed as a literal digit. Ignore it instead.
+                if(ZhuyinKeymap.isToneKey(key) && rime.preeditFlow.value.isEmpty()) return@launch
+                rawInput.append(key.code)
+                rime.processX11Code(key.code)
+            }
             return true
         }
 
-        val composing = rime.preeditFlow.value.isNotEmpty()
-
         if(codePoint in '0'.code..'9'.code) {
-            rawInput.clear()
             coroScope.launch {
-                if(composing) rime.commitComposition()
+                rawInput.clear()
+                if(rime.preeditFlow.value.isNotEmpty()) rime.commitComposition()
                 connect?.commitText(String(Character.toChars(codePoint)), 1)
             }
             return true
         }
 
-        if(codePoint == ' '.code && composing) {
-            if(ZhuyinKeymap.isToneKey(rawInput.text.lastOrNull())) {
-                // The syllable already has a tone: space picks the first candidate, like the
-                // pinyin layout does.
-                rawInput.clear()
-                coroScope.launch {
-                    if(!rime.selectCandidate(0)) rime.commitComposition()
+        if(codePoint == ' '.code) {
+            coroScope.launch {
+                when {
+                    rime.preeditFlow.value.isEmpty() -> {
+                        // Not composing: behave like the generic path (a plain space).
+                        rawInput.clear()
+                        rime.processX11Code(' '.code)
+                    }
+                    ZhuyinKeymap.isToneKey(rawInput.text.lastOrNull()) -> {
+                        // The syllable already has a tone: space picks the first candidate, like
+                        // the pinyin layout does.
+                        rawInput.clear()
+                        if(!rime.selectCandidate(0)) rime.commitComposition()
+                    }
+                    else -> {
+                        rawInput.append(' '.code)
+                        rime.processX11Code(' '.code)
+                    }
                 }
-            } else {
-                rawInput.append(' '.code)
-                coroScope.launch { rime.processX11Code(' '.code) }
             }
             return true
         }
