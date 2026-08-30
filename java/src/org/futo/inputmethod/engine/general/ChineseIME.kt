@@ -342,6 +342,18 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         rime = Rime(shared.path, user.path, helper.context.packageName)
     }
 
+    /**
+     * Text to commit for a key Rime did not consume. Under the Zhuyin layout the key was one of
+     * the standard-keyboard ASCII keys, so show the Zhuyin symbol the user actually pressed
+     * (space stays a space: it is only tone 1 while composing).
+     */
+    private fun passByText(x11Code: Int): String {
+        if (isBopomofo && x11Code != ' '.code && x11Code in 0..Char.MAX_VALUE.code) {
+            ZhuyinKeymap.toZhuyin[x11Code.toChar()]?.let { return it.toString() }
+        }
+        return String(Character.toChars(x11Code))
+    }
+
     private fun handlePassByMessage(x11Code: Int, mask: Int) {
         when (x11Code) {
             XK_BackSpace -> sendDownUpKeyEvent(KeyEvent.KEYCODE_DEL, 0)
@@ -349,8 +361,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             XK_Linefeed  -> sendDownUpKeyEvent(KeyEvent.KEYCODE_ENTER, 0)
             XK_Return    -> sendDownUpKeyEvent(KeyEvent.KEYCODE_ENTER, 0)
             else -> {
+                val text = passByText(x11Code)
                 if (rime.preeditFlow.value.isEmpty() || editingState.active) {
-                    connect?.commitText(String(Character.toChars(x11Code)), 1)
+                    connect?.commitText(text, 1)
                 } else {
                     coroScope.launch {
                         rime.commitComposition()
