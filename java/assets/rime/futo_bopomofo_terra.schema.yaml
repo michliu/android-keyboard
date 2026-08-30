@@ -1,8 +1,10 @@
 # Rime schema
 # encoding: utf-8
 #
-# Zhuyin schema backed by the terra_pinyin dictionary (with tones). Selected automatically by
-# FUTO Keyboard when terra_pinyin.dict.yaml is present in the Rime shared directory.
+# Zhuyin schema backed by the terra_pinyin dictionary (with tones). It is always listed in
+# schema_list (deploy logs an error when terra_pinyin.dict.yaml is missing, which is harmless);
+# FUTO Keyboard selects it at runtime only when terra_pinyin.dict.yaml exists in the Rime
+# shared directory, and uses futo_bopomofo otherwise.
 
 __include: futo_bopomofo.schema:/
 
@@ -18,6 +20,19 @@ schema:
     使用 terra_pinyin 詞庫，聲調參與候選字篩選。
   dependencies:
     - stroke
+
+# Declared locally so that only this schema's own custom patch appends to it (the include
+# would otherwise carry over futo_bopomofo.custom.yaml's appended switches as well).
+switches:
+  - name: ascii_mode
+    reset: 0
+    states: [ 中文, 西文 ]
+  - name: full_shape
+    states: [ 半角, 全角 ]
+  - name: simplification
+    states: [ 漢字, 汉字 ]
+  - name: ascii_punct
+    states: [ 。，, ．， ]
 
 speller:
   algebra:

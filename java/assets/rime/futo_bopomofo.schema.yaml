@@ -98,7 +98,8 @@ punctuator:
 key_binder:
   import_preset: default
   bindings:
-    # The default preset binds these keys to paging; they are Zhuyin keys here.
+    # Guard against presets that bind these keys to paging (upstream rime defaults do);
+    # they are Zhuyin keys in this schema.
     - { when: has_menu, accept: comma, send: comma }      # ㄝ
     - { when: has_menu, accept: period, send: period }    # ㄡ
     - { when: has_menu, accept: minus, send: minus }      # ㄦ

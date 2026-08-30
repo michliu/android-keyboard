@@ -5,6 +5,8 @@
 
 pinyin_to_zhuyin:
   __append:
+    # The two tone-dependent rules below only apply to syllables that already carry a tone
+    # digit (terra_pinyin); with luna_tones they are no-ops for tone-less syllables.
     - xform/^m(\d)$/mu$1/  # 呣
     - xform/^r5$/er5/  # 〜兒
     - xform/iu/iou/
