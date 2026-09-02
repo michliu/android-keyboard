@@ -388,6 +388,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             XK_Tab       -> sendDownUpKeyEvent(KeyEvent.KEYCODE_TAB, 0)
             XK_Linefeed  -> sendDownUpKeyEvent(KeyEvent.KEYCODE_ENTER, 0)
             XK_Return    -> sendDownUpKeyEvent(KeyEvent.KEYCODE_ENTER, 0)
+            XK_Left      -> sendDownUpKeyEvent(KeyEvent.KEYCODE_DPAD_LEFT, 0)
+            XK_Right     -> sendDownUpKeyEvent(KeyEvent.KEYCODE_DPAD_RIGHT, 0)
             else -> {
                 val text = passByText(x11Code)
                 if (rime.preeditFlow.value.isEmpty() || editingState.active) {
@@ -434,13 +436,17 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         }
     }}.launchIn(coroScope)
 
-    private fun subscribeToRimePreedit() = rime.preeditFlow.onEach { ped ->
+    private fun publishPreedit(ped: String) {
         val notEditing = editingState == EditingState.NotEditing
         if(ped.isEmpty() && notEditing) { rawInput.clear(); caretAdjusted = false }
 
         helper.updateUiInputState(ped.isEmpty() && notEditing)
         helper.setPreedit(FloatingPreEdit.build(ped, this, currentTransformation,
             if(caretAdjusted) "￿" else rawInput.text))
+    }
+
+    private fun subscribeToRimePreedit() = rime.preeditFlow.onEach { ped ->
+        publishPreedit(ped)
     }.launchIn(coroScope)
 
     override fun onStartEdit() {
@@ -1020,6 +1026,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                             // Move the caret inside the composition instead of committing it.
                             caretAdjusted = true
                             rawInput.clear()
+                            publishPreedit(rime.preeditFlow.value)
                             coroScope.launch { rime.processX11Code(XK_Left) }
                             return
                         }
@@ -1200,5 +1207,5 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 // Non-behavior methods }}
 
     val debugInfo: String
-        get() = "configuration=${prevConfiguration}\nlayoutHint=${layoutHint}\nlocale=${Settings.getInstance().current.mLocale}\nisSimplified=${isSimplifiedChinese(Settings.getInstance().current.mLocale)}\nrawInput=${rawInput.text}"
+        get() = "configuration=${prevConfiguration}\nlayoutHint=${layoutHint}\nlocale=${Settings.getInstance().current.mLocale}\nisSimplified=${isSimplifiedChinese(Settings.getInstance().current.mLocale)}\nrawInput=${rawInput.text}\ncaretAdjusted=${caretAdjusted}"
 }
