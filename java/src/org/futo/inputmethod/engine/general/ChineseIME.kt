@@ -19,8 +19,10 @@ import icu.astronot233.rime.RimeMessage
 import icu.astronot233.rime.RimeSchema
 import icu.astronot233.rime.SyncStage
 import icu.astronot233.rime.X11Keys.XK_BackSpace
+import icu.astronot233.rime.X11Keys.XK_Left
 import icu.astronot233.rime.X11Keys.XK_Linefeed
 import icu.astronot233.rime.X11Keys.XK_Return
+import icu.astronot233.rime.X11Keys.XK_Right
 import icu.astronot233.rime.X11Keys.XK_Tab
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -258,6 +260,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private val maxBufferLength = 0x100000
     private var layoutHint: String? = null
     private val rawInput = InputKeeper()
+
+    /**
+     * True after the user moved the caret inside the Rime composition (Left arrow). rawInput no
+     * longer mirrors the key sequence then: composing-state checks fall back to the Rime preedit,
+     * rawInput stops being updated, and the pre-edit popup is made non-editable until the
+     * composition ends.
+     */
+    private var caretAdjusted = false
     private val rimeLoading = mutableStateOf(false)
 
     override fun getLoadingState(): MutableState<Boolean>? = rimeLoading
@@ -426,10 +436,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
     private fun subscribeToRimePreedit() = rime.preeditFlow.onEach { ped ->
         val notEditing = editingState == EditingState.NotEditing
-        if(ped.isEmpty() && notEditing) { rawInput.clear() }
+        if(ped.isEmpty() && notEditing) { rawInput.clear(); caretAdjusted = false }
 
         helper.updateUiInputState(ped.isEmpty() && notEditing)
-        helper.setPreedit(FloatingPreEdit.build(ped, this, currentTransformation, rawInput.text))
+        helper.setPreedit(FloatingPreEdit.build(ped, this, currentTransformation,
+            if(caretAdjusted) "￿" else rawInput.text))
     }.launchIn(coroScope)
 
     override fun onStartEdit() {
@@ -791,6 +802,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         coroScope.launch {
             waitingToSelect = null
             rawInput.clear()
+            caretAdjusted = false
             rime.clearComposition()
         }
     }
@@ -801,6 +813,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private fun interruptInput(text: CharSequence? = null) {
         coroScope.launch {
             rawInput.clear()
+            caretAdjusted = false
             rime.clearComposition()
         }
         connect?.finishComposingText()
@@ -882,11 +895,16 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 // A tone with no syllable, or a second tone on an already toned syllable, is not
                 // an initial in the schema; Rime would pass it back and it would be committed as
                 // a literal digit. Ignore it instead.
-                if(ZhuyinKeymap.isToneKey(key) &&
+                if(ZhuyinKeymap.isToneKey(key) && !caretAdjusted &&
                     (rawInput.text.isEmpty() || ZhuyinKeymap.isToneKey(rawInput.text.lastOrNull()))) {
                     return@launch
                 }
-                rawInput.append(key.code)
+                // In caret mode rawInput no longer mirrors the keys, so the only thing that can
+                // still be checked is whether a composition exists at all.
+                if(ZhuyinKeymap.isToneKey(key) && caretAdjusted && rime.preeditFlow.value.isEmpty()) {
+                    return@launch
+                }
+                if(!caretAdjusted) rawInput.append(key.code)
                 rime.processX11Code(key.code)
             }
             return true
@@ -916,14 +934,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                         rawInput.clear()
                         rime.processX11Code(' '.code)
                     }
-                    ZhuyinKeymap.isToneKey(rawInput.text.lastOrNull()) -> {
+                    !caretAdjusted && ZhuyinKeymap.isToneKey(rawInput.text.lastOrNull()) -> {
                         // The syllable already has a tone: space picks the first candidate, like
                         // the pinyin layout does.
                         rawInput.clear()
                         if(!rime.selectCandidate(0)) rime.commitComposition()
                     }
                     else -> {
-                        rawInput.append(' '.code)
+                        if(!caretAdjusted) rawInput.append(' '.code)
                         rime.processX11Code(' '.code)
                     }
                 }
@@ -995,6 +1013,22 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             }
 
             Event.EVENT_TYPE_DOWN_UP_KEYEVENT -> {
+                if(isBopomofo && !editingState.active &&
+                    (rawInput.text.isNotEmpty() || rime.preeditFlow.value.isNotEmpty())) {
+                    when (event.mKeyCode) {
+                        KeyEvent.KEYCODE_DPAD_LEFT -> {
+                            // Move the caret inside the composition instead of committing it.
+                            caretAdjusted = true
+                            rawInput.clear()
+                            coroScope.launch { rime.processX11Code(XK_Left) }
+                            return
+                        }
+                        KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                            coroScope.launch { rime.processX11Code(XK_Right) }
+                            return
+                        }
+                    }
+                }
                 interruptInput()
                 if (event.mX == KeyEvent.META_CTRL_ON) when (event.mKeyCode) {
                     KeyEvent.KEYCODE_F1 -> {
