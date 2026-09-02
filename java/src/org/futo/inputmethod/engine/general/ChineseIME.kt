@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import icu.astronot233.rime.DeployStage
 import icu.astronot233.rime.Rime
@@ -63,6 +64,7 @@ import org.futo.inputmethod.latin.uix.settings.SettingToggleRaw
 import org.futo.inputmethod.latin.uix.settings.UserSetting
 import org.futo.inputmethod.latin.uix.settings.UserSettingsMenu
 import org.futo.inputmethod.latin.uix.settings.useDataStore
+import org.futo.inputmethod.latin.uix.settings.userSettingToggleDataStore
 import org.futo.inputmethod.latin.utils.ZipFileHelper
 import org.futo.inputmethod.latin.utils.toEnumOrNull
 import org.futo.inputmethod.v2keyboard.KeyboardLayoutSetV2
@@ -148,6 +150,11 @@ object ChineseIMESettings {
         ""
     )
 
+    val ZhuyinAdjacentToleranceSetting = SettingsKey(
+        booleanPreferencesKey("ChineseIME_zhuyin_adjacent_tolerance"),
+        true
+    )
+
     var schemaList: List<RimeSchema> = emptyList()
     val menu = UserSettingsMenu(
         title = R.string.chinese_settings_title,
@@ -209,6 +216,12 @@ object ChineseIMESettings {
                 }
 
             },
+
+            userSettingToggleDataStore(
+                title = R.string.chinese_setting_zhuyin_tolerance,
+                subtitle = R.string.chinese_setting_zhuyin_tolerance_subtitle,
+                setting = ZhuyinAdjacentToleranceSetting
+            ),
 
         )
     )
@@ -602,6 +615,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         val learning: Boolean,
         val simplification: Boolean,
         val autocorrect: Boolean,
+        val zhuyinTolerance: Boolean,
         val fuzzyMode: Set<ChineseIMESettings.FuzzyPinyinModes>
     )
     private var prevConfiguration: Configuration? = null
@@ -639,6 +653,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     it.schemePatch.forEach {
                         appendLine("        - $it")
                     }
+                }
+            }
+
+            // Adjacent-key tolerance only applies to the Zhuyin schemas
+            if(schema.startsWith("futo_bopomofo") && cfg.zhuyinTolerance) {
+                appendLine("    speller/algebra/+:")
+                ZhuyinKeymap.toleranceRules().forEach {
+                    appendLine("        - $it")
                 }
             }
         }
@@ -703,7 +725,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
                 val learning = settings.isPersonalizationEnabled
 
-                val config = Configuration(schema, learning, simplified, autocorrect, fuzzy)
+                val zhuyinTolerance = helper.context.getSetting(ChineseIMESettings.ZhuyinAdjacentToleranceSetting)
+
+                val config = Configuration(schema, learning, simplified, autocorrect, zhuyinTolerance, fuzzy)
                 if (config != prevConfiguration) {
                     if (config != retryConfiguration) {
                         retryConfiguration = config
