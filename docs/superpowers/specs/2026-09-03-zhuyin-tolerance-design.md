@@ -41,9 +41,13 @@
   - 其他鍵維持既有行為（`interruptInput()` + `sendDownUpKeyEvent`）。
 - X11 keysym：`icu.astronot233.rime.X11Keys.XK_Left` / `XK_Right`（已確認存在於 aar）。
 - librime 的 `navigator` processor（方案 engine 已含）會在預編輯內移動游標；退格與新輸入自然發生在游標處。
-- `rawInput` 的限制：`rawInput` 假設游標在尾端。游標離開尾端後 `rawInput` 與實際輸入序列可能不一致——
-  處理：按下 LEFT 時將 `rawInput.clear()` 並記 `cursorAdjusted = true`；此後預編輯浮窗顯示 Rime 預編輯（`normalized` 為空時
-  浮窗編輯入口自然不可用），直到組字結束（preedit 清空時 `cursorAdjusted` 復位）。這是可接受的取捨：游標模式下以鍵盤直接修正為主。
+- `rawInput` 的限制：`rawInput` 假設游標在尾端。游標離開尾端後 `rawInput` 與實際輸入序列不再一致——
+  處理：按下 LEFT 時 `rawInput.clear()` 並記 `caretAdjusted = true`；此後：
+  - `handleBopomofoKey` 的「是否組字中」一律改看 `rime.preeditFlow.value`，且不再更新 `rawInput`；
+    空白鍵在組字中一律視為一聲（不做「已有聲調→選字」判斷）；聲調鍵只在完全沒有組字時忽略。
+  - 預編輯浮窗的 `normalized` 傳入哨兵字元 `"\uFFFF"`，使浮窗的可編輯門檻不通過（游標模式下以鍵盤就地修正為主）。
+  - `caretAdjusted` 在 preedit 清空（`subscribeToRimePreedit`）與 `onFinishInput`/`interruptInput` 時復位。
+  方向鍵攔截的組字判斷用 `rawInput.text.isNotEmpty() || rime.preeditFlow.value.isNotEmpty()`（LEFT 清掉 rawInput 後仍可繼續用方向鍵）。
 - 非 bopomofo hint 的行為不變。
 
 ## 測試
