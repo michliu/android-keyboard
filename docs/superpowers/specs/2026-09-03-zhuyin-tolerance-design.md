@@ -36,11 +36,10 @@
 ### 2. 組字中游標修正（IME navigator）
 
 - `ChineseIME.onEvent` 的 `EVENT_TYPE_DOWN_UP_KEYEVENT` 分支：在 `isBopomofo && rawInput.text.isNotEmpty()`（以 rawInput 判組字，與按鍵協程 FIFO 一致）時：
-  - `KEYCODE_DPAD_LEFT` → `coroScope.launch { rime.processX11Code(XK_LEFT) }`，`return`；
-  - `KEYCODE_DPAD_RIGHT` → 同理 `XK_RIGHT`；
+  - `KEYCODE_DPAD_LEFT` → `coroScope.launch { rime.processX11Code(XK_Left) }`，`return`；
+  - `KEYCODE_DPAD_RIGHT` → 同理 `XK_Right`；
   - 其他鍵維持既有行為（`interruptInput()` + `sendDownUpKeyEvent`）。
-- X11 keysym：優先用 aar `icu.astronot233.rime.X11Keys` 的 `XK_Left`/`XK_Right`；若無此常數，在 `ChineseIME` companion 定義
-  `private const val XK_LEFT = 0xFF51`、`XK_RIGHT = 0xFF53`。
+- X11 keysym：`icu.astronot233.rime.X11Keys.XK_Left` / `XK_Right`（已確認存在於 aar）。
 - librime 的 `navigator` processor（方案 engine 已含）會在預編輯內移動游標；退格與新輸入自然發生在游標處。
 - `rawInput` 的限制：`rawInput` 假設游標在尾端。游標離開尾端後 `rawInput` 與實際輸入序列可能不一致——
   處理：按下 LEFT 時將 `rawInput.clear()` 並記 `cursorAdjusted = true`；此後預編輯浮窗顯示 Rime 預編輯（`normalized` 為空時
