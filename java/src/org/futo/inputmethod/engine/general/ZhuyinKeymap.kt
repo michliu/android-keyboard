@@ -44,4 +44,42 @@ object ZhuyinKeymap {
 
     /** Whether [c] is one of the tone keys (space, 6, 3, 4, 7). */
     fun isToneKey(c: Char?): Boolean = c != null && c in TONE_KEYS
+
+    /** Physical key grid of the standard (大千式) keyboard, matching zh_bopomofo.yaml's rows. */
+    private val KEY_GRID = listOf("1234567890-", "qwertyuiop", "asdfghjkl;", "zxcvbnm,./")
+
+    /**
+     * Unordered, de-duplicated pairs of physically adjacent keys: same-row neighbours (i, i+1)
+     * plus the next row's keys at index i-1 and i (rows are half-key staggered).
+     */
+    fun adjacentKeyPairs(): List<Pair<Char, Char>> {
+        val pairs = LinkedHashSet<Set<Char>>()
+        KEY_GRID.forEachIndexed { rowIndex, row ->
+            row.forEachIndexed { i, key ->
+                if (i + 1 < row.length) pairs.add(setOf(key, row[i + 1]))
+                KEY_GRID.getOrNull(rowIndex + 1)?.let { below ->
+                    for (j in intArrayOf(i - 1, i)) {
+                        below.getOrNull(j)?.let { pairs.add(setOf(key, it)) }
+                    }
+                }
+            }
+        }
+        return pairs.map { it.first() to it.last() }
+    }
+
+    private val REGEX_SPECIALS = ".\\^$[](){}*+?|".toSet()
+
+    private fun escapeForPattern(c: Char): String =
+        if (c in REGEX_SPECIALS) "\\$c" else c.toString()
+
+    /**
+     * Rime spelling-algebra fuzz rules accepting a press on a neighbouring key, ranked below
+     * exact spellings. `|` is used as the delimiter because `/` is itself a Zhuyin key.
+     */
+    fun toleranceRules(): List<String> = adjacentKeyPairs().flatMap { (a, b) ->
+        listOf(
+            "fuzz|${escapeForPattern(a)}|$b|",
+            "fuzz|${escapeForPattern(b)}|$a|",
+        )
+    }
 }
