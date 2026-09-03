@@ -95,11 +95,11 @@ class ZhuyinKeymapTest {
         assertTrue(setOf('u', 'i') in sets)
         assertTrue(setOf('.', '/') in sets)
         assertTrue(setOf('0', '-') in sets)
-        // 下一行（i-1 與 i）
-        assertTrue(setOf('u', 'j') in sets)   // row2[6]=u -> row3[6]=j
-        assertTrue(setOf('u', 'h') in sets)   // row2[6]=u -> row3[5]=h
-        assertTrue(setOf('-', 'p') in sets)   // row1[10]='-' -> row2[9]=p
-        assertTrue(setOf('2', 'q') in sets)   // row1[1]='2' -> row2[0]=q
+        // 下一行（i-1 與 i）——已停用，只保留同行相鄰
+        assertFalse(setOf('u', 'j') in sets)   // row2[6]=u -> row3[6]=j
+        assertFalse(setOf('u', 'h') in sets)   // row2[6]=u -> row3[5]=h
+        assertFalse(setOf('-', 'p') in sets)   // row1[10]='-' -> row2[9]=p
+        assertFalse(setOf('2', 'q') in sets)   // row1[1]='2' -> row2[0]=q
         // 不相鄰
         assertFalse(setOf('1', '0') in sets)
         assertFalse(setOf('q', 'l') in sets)

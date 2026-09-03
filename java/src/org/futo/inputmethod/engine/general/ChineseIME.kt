@@ -154,7 +154,7 @@ object ChineseIMESettings {
 
     val ZhuyinAdjacentToleranceSetting = SettingsKey(
         booleanPreferencesKey("ChineseIME_zhuyin_adjacent_tolerance"),
-        true
+        false
     )
 
     var schemaList: List<RimeSchema> = emptyList()

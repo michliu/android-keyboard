@@ -16,12 +16,12 @@
   ```kotlin
   /** 大千鍵盤的物理網格（與 zh_bopomofo.yaml 的行對應） */
   private val KEY_GRID = listOf("1234567890-", "qwertyuiop", "asdfghjkl;", "zxcvbnm,./")
-  /** 同行相鄰與上下鄰近的鍵對（無序、去重、只含 RIME_ALPHABET 內的鍵，不含空白） */
+  /** 同行相鄰的鍵對（無序、去重、只含 RIME_ALPHABET 內的鍵，不含空白） */
   fun adjacentKeyPairs(): List<Pair<Char, Char>>
   ```
-  垂直鄰居的判定：上下兩行中心對齊（行 r 的第 i 鍵，對到行 r+1 的第 i 與 i-1 鍵，符合實體鍵盤半鍵位錯位）。
-  純函式，可單測（例：'u' 的鄰居含 'y','i','7','8','j','k'？——以實作的錯位規則為準，測試鎖定若干代表對）。
-- `ChineseIMESettings` 新增 `ZhuyinAdjacentToleranceSetting = SettingsKey(booleanPreferencesKey("ChineseIME_zhuyin_adjacent_tolerance"), true)`，
+  只取同行相鄰 `(i, i+1)`；原先納入的上下鄰近（半鍵位錯位對齊）已依真機實測拿掉，詳見下方「真機實測記錄」。
+  純函式，可單測（代表對：'1'-'2'、'u'-'i'、'.'-'/'、'0'-'-'；非相鄰對：'1'-'0'、'q'-'l'；上下鄰近對現在應斷言為 false）。
+- `ChineseIMESettings` 新增 `ZhuyinAdjacentToleranceSetting = SettingsKey(booleanPreferencesKey("ChineseIME_zhuyin_adjacent_tolerance"), false)`（預設關閉），
   中文設定頁加開關（`userSettingToggleDataStore`，字串 `chinese_setting_zhuyin_tolerance`）。
 - `ChineseIME.writeCustomizationFile`：`Configuration` 增加 `zhuyinTolerance: Boolean` 欄位；當 schema 以 `futo_bopomofo` 開頭且開啟時，寫入：
   ```yaml
@@ -39,7 +39,14 @@
   而所有 pattern 都以 `[^~]*` 排除它：已含 marker 的拼寫再也命中不了任何 fuzz 規則，故**一個拼寫最多只會被替換一次**。
   所有 fuzz 規則之後再附一條 `xform|~||` 把 marker 去掉，推導出的拼寫仍是真實按鍵序列。
   `${1}`/`${2}` 分組引用在本版 Rime 可用（隨附的 `luna_tones` 規則即使用 `${1}1` 並能正常部署）。
-- 部署代價：真機驗收標準：**部署不崩潰**、詞庫部署時間 ≤ 15 秒且正常拼寫的首選不變；超標則退化為「只做同行相鄰」。
+- 部署代價：真機驗收標準：**部署不崩潰**、詞庫部署時間 ≤ 15 秒且正常拼寫的首選不變；超標則退化為「只做同行相鄰」（見下方實測記錄，此退化已套用為正式行為）。
+
+#### 真機實測記錄
+
+用完整鄰居集合（同行 + 錯位下一行，共 95 對）部署：沒有崩潰，但建置耗時約 2 分 10 秒、prism 檔案 26.7 MB，
+且正常輸入時汙染了首選候選——例如 ㄋㄧˇ 的候選列前段出現「那／哪／裏／里」；一次誤觸的救援候選則被埋在數十個精確匹配之下，
+使用者幾乎看不到它。三項都不可接受，因此改為只用同行相鄰鍵對（KEY_GRID 各列不變，只砍掉跨列規則），
+並把 `ZhuyinAdjacentToleranceSetting` 預設改為關閉，直到有更小的規則集或排序調整能解決汙染問題。
 
 ### 2. 組字中游標修正（IME navigator）
 
@@ -60,11 +67,12 @@
 
 ## 測試
 
-- 單元：`adjacentKeyPairs` 對稱、無重複、不含空白、代表對抽查（'1'-'2'、'u'-'i'、'u'-'j'、'/'-'.'、'-'-'0'）；
+- 單元：`adjacentKeyPairs` 對稱、無重複、不含空白、同行代表對抽查（'1'-'2'、'u'-'i'、'.'-'/'、'0'-'-'）、
+  下一行對現在應為 false（'u'-'j'、'u'-'h'、'-'-'p'、'2'-'q'）；
   fuzz 規則文本生成（給定小鄰居表 → 期望 yaml 行）。
-- 真機：
-  1. 想按 ㄧ(`u`) 誤按 ㄩ(`m`)：ㄋㄩˇ 仍出「你」（排名靠後但可見）；關閉開關後不再出現。
-  2. 部署時間：切開關後首次喚起 ≤ 15 秒完成（logcat Deploy 間隔）。
+- 真機（已依「真機實測記錄」改為只驗證同行相鄰的縮小規則集，開關預設關閉，需手動開啟後測試）：
+  1. 想按 ㄧ(`u`) 誤按同排的 `t`(ㄔ)：帶 ㄧ 的字仍出正確候選（排名靠後但可見）；關閉開關後不再出現。
+  2. 部署時間：開啟開關後首次喚起 ≤ 15 秒完成（logcat Deploy 間隔）——此為縮小後的同行規則集（約一半的鍵對數）下的驗收標準，全鄰居集合（同行+下一行，95 對）實測約 2 分 10 秒、prism 26.7 MB，已不採用。
   3. 正常輸入 ㄋㄧˇㄏㄠˇ 首選仍為「你好」。
   4. ㄓㄨㄥㄨㄣ 組字中按 ← ←、退格、按 ㄩ：預編輯變 ㄓㄨㄥㄩㄣ（游標處修正），候選更新；→ 回尾端繼續輸入正常。
   5. 非組字時方向鍵仍移動宿主游標；拼音布局行為不變。

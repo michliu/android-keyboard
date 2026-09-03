@@ -50,18 +50,14 @@ object ZhuyinKeymap {
 
     /**
      * Unordered, de-duplicated pairs of physically adjacent keys: same-row neighbours (i, i+1)
-     * plus the next row's keys at index i-1 and i (rows are half-key staggered).
+     * only; the staggered next-row pairs made the rule set large enough to visibly pollute
+     * candidate ranking on device.
      */
     fun adjacentKeyPairs(): List<Pair<Char, Char>> {
         val pairs = LinkedHashSet<Set<Char>>()
-        KEY_GRID.forEachIndexed { rowIndex, row ->
+        KEY_GRID.forEach { row ->
             row.forEachIndexed { i, key ->
                 if (i + 1 < row.length) pairs.add(setOf(key, row[i + 1]))
-                KEY_GRID.getOrNull(rowIndex + 1)?.let { below ->
-                    for (j in intArrayOf(i - 1, i)) {
-                        below.getOrNull(j)?.let { pairs.add(setOf(key, it)) }
-                    }
-                }
             }
         }
         return pairs.map { it.first() to it.last() }
