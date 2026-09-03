@@ -106,14 +106,16 @@ class ZhuyinKeymapTest {
     }
 
     @Test
-    fun toleranceRulesEscapeAndPairUp() {
+    fun toleranceRulesUseSingleSubstitutionMarkers() {
         val rules = ZhuyinKeymap.toleranceRules()
-        assertEquals(ZhuyinKeymap.adjacentKeyPairs().size * 2, rules.size)
-        assertTrue(rules.contains("fuzz|u|i|"))
-        assertTrue(rules.contains("fuzz|i|u|"))
-        // '.' 在 pattern 端跳脫、在替換端不跳脫
-        assertTrue(rules.contains("fuzz|\\.|/|"))
-        assertTrue(rules.contains("fuzz|/|.|"))
-        assertFalse(rules.any { it.contains(' ') })
+        assertEquals(ZhuyinKeymap.adjacentKeyPairs().size * 2 + 1, rules.size)
+        assertEquals("xform|~||", rules.last())
+        assertTrue(rules.contains("fuzz|^([^~]*)u([^~]*)\$|\${1}~i\${2}|"))
+        assertTrue(rules.contains("fuzz|^([^~]*)i([^~]*)\$|\${1}~u\${2}|"))
+        // '.' escaped on the pattern side, raw on the replacement side
+        assertTrue(rules.contains("fuzz|^([^~]*)\\.([^~]*)\$|\${1}~/\${2}|"))
+        assertTrue(rules.contains("fuzz|^([^~]*)/([^~]*)\$|\${1}~.\${2}|"))
+        // no rule (other than the cleanup) may produce output without the marker
+        assertTrue(rules.dropLast(1).all { it.startsWith("fuzz|^([^~]*)") && it.contains("~") })
     }
 }

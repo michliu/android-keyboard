@@ -73,13 +73,20 @@ object ZhuyinKeymap {
         if (c in REGEX_SPECIALS) "\\$c" else c.toString()
 
     /**
-     * Rime spelling-algebra fuzz rules accepting a press on a neighbouring key, ranked below
-     * exact spellings. `|` is used as the delimiter because `/` is itself a Zhuyin key.
+     * Rime spelling-algebra rules accepting one press on a neighbouring key per syllable,
+     * ranked below exact spellings. Each substitution inserts the `~` marker (not part of the
+     * speller alphabet) and every pattern excludes it, so derived spellings never feed later
+     * rules — without this guard the substitutions chain through the neighbour graph and the
+     * prism build explodes (observed as a native SIGABRT during deploy). A final xform strips
+     * the marker. `|` is the delimiter because `/` is itself a Zhuyin key.
      */
-    fun toleranceRules(): List<String> = adjacentKeyPairs().flatMap { (a, b) ->
-        listOf(
-            "fuzz|${escapeForPattern(a)}|$b|",
-            "fuzz|${escapeForPattern(b)}|$a|",
-        )
+    fun toleranceRules(): List<String> {
+        val rules = adjacentKeyPairs().flatMap { (a, b) ->
+            listOf(
+                "fuzz|^([^~]*)${escapeForPattern(a)}([^~]*)\$|\${1}~$b\${2}|",
+                "fuzz|^([^~]*)${escapeForPattern(b)}([^~]*)\$|\${1}~$a\${2}|",
+            )
+        }
+        return rules + "xform|~||"
     }
 }
