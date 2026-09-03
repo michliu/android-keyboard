@@ -415,6 +415,24 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                         Log.d(TAG, "Schemas: ${it.joinToString { it.toString() }} ")
                     }
                 }
+                // A deploy that outlasted updateConfig()'s poll window left the schema
+                // unselected; apply it now that the rebuild is actually finished. The config
+                // semaphore is deliberately not held here: this path writes no files and only
+                // transitions the pending selection to the applied state, and updateConfig()
+                // skips its own deploy while the same configuration is pending.
+                coroScope.launch {
+                    pendingSchemaSelection?.let { pending ->
+                        if (rime.selectSchema(pending.schema)) {
+                            rime.setOption("simplification", pending.simplification)
+                            rime.setOption("traditional", !pending.simplification)
+                            prevConfiguration = pending
+                            retryConfiguration = pending
+                            schemaSelectRetries = 0
+                            pendingSchemaSelection = null
+                            Log.i(TAG, "Selected schema '${pending.schema}' after deploy completed")
+                        }
+                    }
+                }
             }
             else -> {}
         }
@@ -641,11 +659,15 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private var retryConfiguration: Configuration? = null
     private var schemaSelectRetries = 0
 
+    /** Schema that still needs to be selected once the in-flight deploy finishes. */
+    private var pendingSchemaSelection: Configuration? = null
+
     /** Forget the applied configuration and the retry budget; the next updateConfig() starts over. */
     private fun invalidateConfiguration() {
         prevConfiguration = null
         retryConfiguration = null
         schemaSelectRetries = 0
+        pendingSchemaSelection = null
     }
 
     private fun writeCustomizationFile(cfg: Configuration) {
@@ -746,6 +768,12 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
                 val config = Configuration(schema, learning, simplified, autocorrect, zhuyinTolerance, fuzzy)
                 if (config != prevConfiguration) {
+                    // A pending selection for a different (now stale) configuration must not be
+                    // applied by the deploy-success handler once this deploy finishes.
+                    if (pendingSchemaSelection != null && pendingSchemaSelection != config) {
+                        pendingSchemaSelection = null
+                    }
+
                     if (config != retryConfiguration) {
                         retryConfiguration = config
                         schemaSelectRetries = 0
@@ -757,8 +785,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     }
 
                     rimeLoading.value = true
-                    writeCustomizationFile(config)
-                    rime.deploy()
+                    // A retry (or a poll that ran while this very configuration is still pending)
+                    // must not restart the deploy: the rebuild it would cancel is the one that is
+                    // about to make the schema selectable.
+                    if (pendingSchemaSelection != config) {
+                        writeCustomizationFile(config)
+                        rime.deploy()
+                    }
 
                     var result = false
                     for(i in 0..10) {
@@ -775,8 +808,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     if(result) {
                         prevConfiguration = config
                         schemaSelectRetries = 0
+                        pendingSchemaSelection = null
                     } else {
                         Log.e(TAG, "Failed to select schema 3s after deployment!")
+                        // The deploy is still running. Remember the configuration so the
+                        // DeployStage.Success message applies it as soon as the rebuild finishes;
+                        // the bounded polling retries below are only a fallback and no longer
+                        // redeploy (which used to restart the very rebuild they waited for).
+                        pendingSchemaSelection = config
                         // Leave prevConfiguration untouched so the next onStartInput retries, and
                         // retry a bounded number of times ourselves: after the user directory was
                         // wiped every schema has to be rebuilt, which can take longer than 3s.
@@ -787,7 +826,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                                 updateConfig()
                             }
                         } else {
-                            Log.e(TAG, "Giving up on schema '${config.schema}' after $schemaSelectRetries attempts")
+                            Log.e(TAG, "Giving up polling for schema '${config.schema}'; will select it when the deploy completes")
                         }
                     }
                 }
