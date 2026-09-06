@@ -145,13 +145,13 @@
 
   `enable_completion: false`：只有整個輸入的音節序列與詞完全對應時才出現，
   避免打單字時被個人詞插隊。省略末尾聲調仍能匹配，因為 prism 本身含無聲調形式。
-  候選品質是 `exp(權重) + initial_quality`，詞庫詞的權重可達數萬以上，所以用極大的
-  `initial_quality` 保證個人詞永遠排在詞庫候選之前；`preedit_format` 與主 translator 相同，
+  Rime 先比候選涵蓋的長度（較長者在前），長度相同才比品質；`initial_quality` 直接加進品質，
+  用極大的值保證同長度時個人詞排在詞庫候選之前，輸入比個人詞更長時詞庫的長詞仍會勝出；`preedit_format` 與主 translator 相同，
   否則個人詞成為首選時預編輯會顯示原始按鍵而不是注音。
 - `futo_bopomofo_terra.schema.yaml`：透過 `__include` 已繼承 `engine` 與 `custom_dict`；
   其自行宣告的 `schema/dependencies` 同樣加 `futo_custom_bopomofo`。
 - `default.custom.yaml` 不變：依賴方案不需要列在 `schema_list`。
-- `BundledRimeAssets`：`SHARED_FILES` 加 `futo_custom_bopomofo.schema.yaml`，`VERSION` 升為 3。
+- `BundledRimeAssets`：`SHARED_FILES` 加 `futo_custom_bopomofo.schema.yaml`，`VERSION` 升為 4。
   `ensure()` 在主執行緒（`onStartInput`）被呼叫，原本以 `setSettingBlocking`（`runBlocking`）
   寫版本號，在真機上造成主執行緒死鎖（ANR，卡住 3 分鐘以上）；改為在 IO 協程寫入，
   並以程序內的 `ensuredVersion` 避免同一程序重複複製。
@@ -184,13 +184,16 @@
   `transformNavWord` 用預設值：列表直接顯示 `word`（詞）與 `shortcut`（注音）。
 - 新檔 `pdict/PersonalDictionaryZh.kt`，`ZhuyinWordPopupDialog(selectedWord: PersonalWord?, locale: Locale?)`：
   - 「詞」：`SettingsTextEdit`，預填既有的 `word`。
+  - 「注音」標籤下有一行說明「只在注音鍵盤生效，拼音與筆畫鍵盤不會使用這些字詞」，
+    因為 `zh` 語言整體開放，簡體拼音使用者也看得到這個對話框。
   - 「注音」：唯讀顯示目前的注音串（預填既有的 `shortcut`），下方是按鍵區：
     37 個注音符號（ㄅ…ㄦ）、5 個聲調（ˉ ˊ ˇ ˋ ˙）、退格；點一下在尾端附加或刪除一個符號。
     這樣不依賴當前啟用的鍵盤，也不會被輸入法把符號轉成漢字。
   - 注音串非空且 `ZhuyinSyllables.toLunaPinyin` 回傳 null 時，顯示錯誤文字「注音不完整或有誤」。
   - 確定鍵在詞非空、注音非空且能解析時才啟用。
   - 儲存：`PersonalWord(word, frequency = 250, locale = locale.toString(), appId = 0, shortcut = 注音串)`；
-    編輯時先 `remove` 舊詞再 `put`；刪除鍵 `remove`。三者之後都 `GlobalIMEMessage.tryEmit(ReloadPersonalDict)`
+    編輯時先 `remove` 舊詞再 `put`；刪除鍵 `remove`。`UserDictionaryIO.remove` 的條件加入
+    `shortcut`（原本只比對 word 與 locale），否則一詞多音（行：ㄒㄧㄥˊ／ㄏㄤˊ）編輯其中一個會把另一個一起刪掉。三者之後都 `GlobalIMEMessage.tryEmit(ReloadPersonalDict)`
     並 `navigateUp()`，與日文對話框相同。
   - 字串：「注音：」與錯誤文字「注音不完整或有誤」直接寫在對話框裡（與日文對話框的
     「よみ:」「単語:」相同做法；`translations` 是子模組，不在這裡加資源字串）；

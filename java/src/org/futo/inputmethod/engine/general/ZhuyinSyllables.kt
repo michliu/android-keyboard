@@ -137,6 +137,8 @@ object ZhuyinSyllables {
 
         val rime = MEDIAL_AFTER_INITIAL.getValue(medial)[final] ?: return null
         if (medial == 'ㄩ') {
+            // ㄩㄥ (iong) only exists after ㄐㄑㄒ; ㄋㄩㄥ / ㄌㄩㄥ are not Mandarin syllables.
+            if (final == 'ㄥ' && initial !in YU_AS_U_INITIALS) return null
             return when (initial) {
                 in YU_AS_U_INITIALS -> initialPinyin + rime.replaceFirst('v', 'u')
                 in YU_AS_V_INITIALS -> initialPinyin + rime

@@ -85,11 +85,16 @@ fun ZhuyinWordPopupDialog(selectedWord: PersonalWord? = null, locale: Locale? = 
                 modifier = Modifier.verticalScroll(rememberScrollState())
             ) {
                 Text(stringResource(R.string.user_dict_settings_add_word_option_name))
-                SettingsTextEdit(word, placeholder = "...")
+                SettingsTextEdit(word, placeholder = stringResource(R.string.user_dict_settings_add_word_hint))
 
                 Spacer(Modifier.height(12.dp))
 
                 Text("注音：")
+                Text(
+                    text = "只在注音鍵盤生效，拼音與筆畫鍵盤不會使用這些字詞。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Text(
                     text = zhuyin.value.ifEmpty { " " },
                     style = MaterialTheme.typography.titleLarge,

@@ -62,16 +62,19 @@ class UserDictionaryIO(val context: Context) {
 
     fun remove(words: List<PersonalWord>) {
         words.forEach {
+            // Match the shortcut as well: Chinese words store their reading there, and one
+            // word can have several readings (行: ㄒㄧㄥˊ / ㄏㄤˊ) that must stay independent.
+            val where = StringBuilder(UserDictionary.Words.WORD + " = ?")
+            val args = mutableListOf(it.word)
             if(it.locale != null) {
-                val where =
-                    UserDictionary.Words.WORD + " = ? AND " + UserDictionary.Words.LOCALE + " = ?"
-                val args = arrayOf(it.word, it.locale)
-                contentResolver.delete(uri, where, args)
-            } else {
-                val where = UserDictionary.Words.WORD + "=?"
-                val args = arrayOf(it.word)
-                contentResolver.delete(uri, where, args)
+                where.append(" AND " + UserDictionary.Words.LOCALE + " = ?")
+                args.add(it.locale)
             }
+            if(it.shortcut != null) {
+                where.append(" AND " + UserDictionary.Words.SHORTCUT + " = ?")
+                args.add(it.shortcut)
+            }
+            contentResolver.delete(uri, where.toString(), args.toTypedArray())
         }
     }
 }

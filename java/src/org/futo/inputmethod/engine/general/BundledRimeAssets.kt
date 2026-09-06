@@ -23,7 +23,7 @@ object BundledRimeAssets {
     private const val ASSET_DIR = "rime"
 
     /** Bump whenever any file under assets/rime changes, so existing installs are refreshed. */
-    const val VERSION = 3
+    const val VERSION = 4
 
     /** Copied into the Rime shared directory (recreated whenever the dictionary is re-extracted). */
     val SHARED_FILES = listOf(
@@ -68,7 +68,11 @@ object BundledRimeAssets {
             SHARED_FILES.forEach { copyAsset(context, it, File(shared, it)) }
             USER_FILES.forEach { copyAsset(context, it, File(user, it)) }
             ensuredVersion = VERSION
-            settingScope.launch { context.setSetting(VersionSetting.key, VERSION) }
+            settingScope.launch {
+                // A failed write is harmless: the files are copied again on the next start.
+                runCatching { context.setSetting(VersionSetting.key, VERSION) }
+                    .onFailure { Log.w(TAG, "Failed to persist the bundled Rime asset version", it) }
+            }
             true
         } catch (e: IOException) {
             // Leave the version setting untouched so the next call retries.

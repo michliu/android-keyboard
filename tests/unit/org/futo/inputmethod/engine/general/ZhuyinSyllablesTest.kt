@@ -107,6 +107,8 @@ class ZhuyinSyllablesTest {
         assertNull(pinyin("ˇ"))
         assertNull(pinyin("ㄋㄧˇˇ"))
         assertNull(pinyin("ㄅㄩ"))
+        assertNull(pinyin("ㄋㄩㄥ"))
+        assertNull(pinyin("ㄌㄩㄥ"))
         assertNull(pinyin("ㄅ"))
         assertNull(pinyin("ㄅㄦ"))
         assertNull(pinyin("ㄧㄦ"))
