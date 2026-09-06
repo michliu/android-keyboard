@@ -71,7 +71,10 @@ private val ExceptionalPersonalDictionaryLanguages = mapOf(
             word.copy(word = it.output, shortcut = it.furigana)
         } ?: word }
     ),
-    "zh" to ExceptionalPersonalDictionaryViewConfiguration(supported = false)
+    "zh" to ExceptionalPersonalDictionaryViewConfiguration(
+        supported = true,
+        wordPopupDialog = { word, locale -> ZhuyinWordPopupDialog(word, locale) }
+    )
 )
 
 @Composable
