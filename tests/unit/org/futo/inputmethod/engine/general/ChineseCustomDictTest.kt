@@ -47,12 +47,29 @@ class ChineseCustomDictTest {
         val a = ChineseCustomDict.entries(listOf(
             word("你好", "ㄋㄧˇㄏㄠˇ"),
             word("天空", "ㄊㄧㄢㄎㄨㄥ"),
+            word("行", "ㄒㄧㄥˊ"),
+            word("行", "ㄏㄤˊ"),
         ))
         val b = ChineseCustomDict.entries(listOf(
+            word("行", "ㄏㄤˊ"),
             word("天空", "ㄊㄧㄢㄎㄨㄥ"),
+            word("行", "ㄒㄧㄥˊ"),
             word("你好", "ㄋㄧˇㄏㄠˇ"),
         ))
         assertEquals(ChineseCustomDict.render(a), ChineseCustomDict.render(b))
+    }
+
+    @Test
+    fun entriesAreOrderedByTextThenCode() {
+        val entries = ChineseCustomDict.entries(listOf(
+            word("行", "ㄒㄧㄥˊ"),
+            word("行", "ㄏㄤˊ"),
+            word("你好", "ㄋㄧˇㄏㄠˇ"),
+        ))
+        assertEquals(
+            listOf("你好" to "ni hao", "行" to "hang", "行" to "xing"),
+            entries.map { it.text to it.code }
+        )
     }
 
     @Test

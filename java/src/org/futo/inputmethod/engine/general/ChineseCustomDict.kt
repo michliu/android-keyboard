@@ -33,7 +33,7 @@ object ChineseCustomDict {
         val code = ZhuyinSyllables.toLunaPinyin(word.shortcut ?: return@mapNotNull null)
             ?: return@mapNotNull null
         Entry(text, code, word.frequency.coerceAtLeast(1))
-    }.sortedWith(compareBy({ it.text }, { it.code }))
+    }.sortedWith(compareBy({ it.text }, { it.code }, { it.weight }))
 
     /** The full text of `futo_custom.dict.yaml`; a valid (empty) dictionary when there are no entries. */
     fun render(entries: List<Entry>): String = buildString {

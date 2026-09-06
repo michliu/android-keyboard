@@ -723,6 +723,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     )
                 }
 
+                // The IO block above is a suspension point: an editing session may have started
+                // while the personal dictionary was being read. Do not deploy in that case.
+                if(editingState.active) return@launch
+
                 // Only the Zhuyin schemas read futo_custom; do not make a pinyin/stroke user's
                 // personal-dictionary change trigger a redeploy of their (unrelated) schema.
                 val customDictHash = if (schema.startsWith("futo_bopomofo")) customDict.hashCode() else 0
