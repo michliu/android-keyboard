@@ -174,8 +174,9 @@
   - 儲存：`PersonalWord(word, frequency = 250, locale = locale.toString(), appId = 0, shortcut = 注音串)`；
     編輯時先 `remove` 舊詞再 `put`；刪除鍵 `remove`。三者之後都 `GlobalIMEMessage.tryEmit(ReloadPersonalDict)`
     並 `navigateUp()`，與日文對話框相同。
-  - 字串：新增 `personal_dictionary_zhuyin_label`（「注音」）、`personal_dictionary_zhuyin_error`
-    到 `strings-uix.xml`；詞、標題、按鈕沿用既有 `user_dict_settings_*` 字串。
+  - 字串：「注音：」與錯誤文字「注音不完整或有誤」直接寫在對話框裡（與日文對話框的
+    「よみ:」「単語:」相同做法；`translations` 是子模組，不在這裡加資源字串）；
+    詞、標題、按鈕沿用既有 `user_dict_settings_*` 字串。
 
 ## 資料流
 
