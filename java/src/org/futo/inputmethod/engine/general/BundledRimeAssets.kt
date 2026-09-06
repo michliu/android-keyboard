@@ -19,13 +19,14 @@ object BundledRimeAssets {
     private const val ASSET_DIR = "rime"
 
     /** Bump whenever any file under assets/rime changes, so existing installs are refreshed. */
-    const val VERSION = 1
+    const val VERSION = 2
 
     /** Copied into the Rime shared directory (recreated whenever the dictionary is re-extracted). */
     val SHARED_FILES = listOf(
         "futo_zhuyin.yaml",
         "futo_bopomofo.schema.yaml",
         "futo_bopomofo_terra.schema.yaml",
+        "futo_custom_bopomofo.schema.yaml",
     )
 
     /** Copied into the Rime user directory (wiped when the user clears learned words). */

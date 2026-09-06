@@ -1,0 +1,46 @@
+# Rime schema
+# encoding: utf-8
+#
+# Dependency schema of futo_bopomofo / futo_bopomofo_terra. It is never selected as an input
+# schema; it only exists so that the deployer compiles the personal dictionary
+# (futo_custom.dict.yaml, written by FUTO Keyboard into the Rime user directory) together
+# with a Zhuyin prism that uses the same spelling rules as the Zhuyin schemas. The tone rules
+# are always the luna_tones ones because the personal dictionary carries no tones.
+
+schema:
+  schema_id: futo_custom_bopomofo
+  name: 注音個人字典
+  version: "1.0"
+  author:
+    - FUTO Keyboard
+  description: |
+    個人字典的注音詞典（僅供 futo_bopomofo 方案引用）。
+
+engine:
+  processors:
+    - speller
+  segmentors:
+    - abc_segmentor
+  translators:
+    - table_translator
+
+speller:
+  alphabet: '1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/- 6347'
+  initials: '1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/-'
+  finals: " 6347"
+  delimiter: "'"
+  use_space: true
+  algebra:
+    __patch:
+      - futo_zhuyin:/pinyin_to_zhuyin
+      - futo_zhuyin:/luna_tones
+      - futo_zhuyin:/free_order
+      - futo_zhuyin:/abbreviation
+      - futo_zhuyin:/keymap_bopomofo
+
+translator:
+  dictionary: futo_custom
+  prism: futo_custom_bopomofo
+  enable_completion: false
+  enable_sentence: false
+  enable_user_dict: false

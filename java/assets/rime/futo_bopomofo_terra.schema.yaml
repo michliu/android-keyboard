@@ -20,6 +20,7 @@ schema:
     使用 terra_pinyin 詞庫，聲調參與候選字篩選。
   dependencies:
     - stroke
+    - futo_custom_bopomofo
 
 # Declared locally so that only this schema's own custom patch appends to it (the include
 # would otherwise carry over futo_bopomofo.custom.yaml's appended switches as well).

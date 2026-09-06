@@ -16,6 +16,7 @@ schema:
     使用 luna_pinyin 詞庫，聲調只作為音節分隔，不影響候選字。
   dependencies:
     - stroke
+    - futo_custom_bopomofo
 
 switches:
   - name: ascii_mode
@@ -46,6 +47,7 @@ engine:
     - fallback_segmentor
   translators:
     - punct_translator
+    - table_translator@custom_dict
     - table_translator@custom_phrase
     - reverse_lookup_translator
     - script_translator
@@ -72,6 +74,17 @@ translator:
   prism: futo_bopomofo
   preedit_format:
     - "xlit|1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/- 6347'|ㄅㄆㄇㄈㄉㄊㄋㄌㄍㄎㄏㄐㄑㄒㄓㄔㄕㄖㄗㄘㄙㄧㄨㄩㄚㄛㄜㄝㄞㄟㄠㄡㄢㄣㄤㄥㄦˉˊˇˋ˙ |"
+
+# 個人字典（設定 → 個人字典 → 中文）。FUTO Keyboard 依個人字典寫出 futo_custom.dict.yaml，
+# 由依賴方案 futo_custom_bopomofo 編譯；此處只讀取。initial_quality 1 讓個人詞排在詞庫候選之前；
+# 不開 completion，只有整個音節序列對應到個人詞時才出現，避免打單字時被插隊。
+custom_dict:
+  dictionary: futo_custom
+  prism: futo_custom_bopomofo
+  enable_completion: false
+  enable_sentence: false
+  enable_user_dict: false
+  initial_quality: 1
 
 custom_phrase:
   dictionary: ""
