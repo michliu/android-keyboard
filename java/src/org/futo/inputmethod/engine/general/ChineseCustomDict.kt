@@ -24,10 +24,12 @@ object ChineseCustomDict {
      * then dangles and the deployer crashes with SIGSEGV. A personal dictionary with only a
      * few words hits this every time, so the rendered dictionary always carries padding
      * entries. Their code `#` is not in the Zhuyin speller alphabet (`#` goes to Rime's
-     * punctuator, never to the speller), so they can never be typed or shown.
+     * punctuator, never to the speller), so they can never be typed or shown. The text must
+     * not start with `#`: Rime reads such lines as comments.
      */
     const val PADDING_ENTRIES = 256
     const val PADDING_CODE = "#"
+    const val PADDING_TEXT_PREFIX = "pad"
 
     /** Whether a UserDictionary locale string ("zh", "zh_TW", "zh-Hant-TW") is Chinese. */
     fun isChinese(locale: String?): Boolean =
@@ -58,7 +60,7 @@ object ChineseCustomDict {
         appendLine("use_preset_vocabulary: false")
         appendLine("...")
         entries.forEach { appendLine("${it.text}\t${it.code}\t${it.weight}") }
-        repeat(PADDING_ENTRIES) { appendLine("#$it\t$PADDING_CODE\t1") }
+        repeat(PADDING_ENTRIES) { appendLine("$PADDING_TEXT_PREFIX$it\t$PADDING_CODE\t1") }
     }
 
     /**

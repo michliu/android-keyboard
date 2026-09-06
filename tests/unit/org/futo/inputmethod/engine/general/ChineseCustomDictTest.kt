@@ -73,7 +73,7 @@ class ChineseCustomDictTest {
     }
 
     private val padding = (0 until ChineseCustomDict.PADDING_ENTRIES)
-        .joinToString("") { "#$it\t${ChineseCustomDict.PADDING_CODE}\t1\n" }
+        .joinToString("") { "${ChineseCustomDict.PADDING_TEXT_PREFIX}$it\t${ChineseCustomDict.PADDING_CODE}\t1\n" }
 
     @Test
     fun renderEmptyDictionaryIsHeaderAndPadding() {
@@ -95,6 +95,9 @@ class ChineseCustomDictTest {
     fun paddingCodeIsNotAZhuyinKey() {
         assertTrue(ChineseCustomDict.PADDING_ENTRIES >= 128)
         assertFalse(ChineseCustomDict.PADDING_CODE.any { it in ZhuyinKeymap.alphabet })
+        // A line starting with '#' is a comment to Rime and would not count as an entry.
+        assertFalse(ChineseCustomDict.PADDING_TEXT_PREFIX.startsWith("#"))
+        assertFalse(ChineseCustomDict.render(emptyList()).lines().any { it.startsWith("#") && it.contains('\t') })
     }
 
     @Test
