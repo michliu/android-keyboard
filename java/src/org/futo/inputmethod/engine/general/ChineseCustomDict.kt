@@ -17,6 +17,18 @@ object ChineseCustomDict {
 
     data class Entry(val text: String, val code: String, val weight: Int)
 
+    /**
+     * librime 1.16 creates the compiled table with an estimated size of
+     * `4096 + 32 * syllables + 64 * entries` bytes and grows the file when the string table
+     * (a marisa trie with a fixed overhead of several KB) does not fit; the metadata pointer
+     * then dangles and the deployer crashes with SIGSEGV. A personal dictionary with only a
+     * few words hits this every time, so the rendered dictionary always carries padding
+     * entries. Their code `#` is not in the Zhuyin speller alphabet (`#` goes to Rime's
+     * punctuator, never to the speller), so they can never be typed or shown.
+     */
+    const val PADDING_ENTRIES = 256
+    const val PADDING_CODE = "#"
+
     /** Whether a UserDictionary locale string ("zh", "zh_TW", "zh-Hant-TW") is Chinese. */
     fun isChinese(locale: String?): Boolean =
         locale?.substringBefore('_')?.substringBefore('-')?.lowercase() == "zh"
@@ -46,6 +58,7 @@ object ChineseCustomDict {
         appendLine("use_preset_vocabulary: false")
         appendLine("...")
         entries.forEach { appendLine("${it.text}\t${it.code}\t${it.weight}") }
+        repeat(PADDING_ENTRIES) { appendLine("#$it\t$PADDING_CODE\t1") }
     }
 
     /**
