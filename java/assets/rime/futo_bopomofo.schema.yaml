@@ -47,7 +47,7 @@ engine:
     - fallback_segmentor
   translators:
     - punct_translator
-    - table_translator@custom_dict
+    - script_translator@custom_dict
     - table_translator@custom_phrase
     - reverse_lookup_translator
     - script_translator
@@ -76,55 +76,17 @@ translator:
     - "xlit|1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/- 6347'|ㄅㄆㄇㄈㄉㄊㄋㄌㄍㄎㄏㄐㄑㄒㄓㄔㄕㄖㄗㄘㄙㄧㄨㄩㄚㄛㄜㄝㄞㄟㄠㄡㄢㄣㄤㄥㄦˉˊˇˋ˙ |"
 
 # 個人字典（設定 → 個人字典 → 中文）。FUTO Keyboard 依個人字典寫出 futo_custom.dict.yaml，
-# 由依賴方案 futo_custom_bopomofo 編譯；此處只讀取。initial_quality 1 讓個人詞排在詞庫候選之前；
-# 不開 completion，只有整個音節序列對應到個人詞時才出現，避免打單字時被插隊。
+# 由依賴方案 futo_custom_bopomofo 編譯；此處只讀取。用 script_translator 而不是 table_translator：
+# 後者把整段輸入當成單一編碼查表（custom_phrase 的模型），不會按音節圖比對多音節的個人詞。
+# initial_quality 極大，讓個人詞永遠排在詞庫候選之前；不開 completion 與 sentence，
+# 只有整個音節序列對應到個人詞時才出現，避免打單字時被插隊。
 custom_dict:
   dictionary: futo_custom
   prism: futo_custom_bopomofo
   enable_completion: false
   enable_sentence: false
   enable_user_dict: false
-  initial_quality: 1
-
-custom_phrase:
-  dictionary: ""
-  user_dict: custom_phrase
-  db_class: stabledb
-  enable_completion: false
-  enable_sentence: false
-  initial_quality: 1
-
-reverse_lookup:
-  dictionary: stroke
-  enable_completion: true
-  prefix: "`"
-  suffix: "'"
-  tips: 〔筆畫〕
+  initial_quality: 1000000000000
   preedit_format:
-    - xlit/hspnz/一丨丿丶乙/
-  comment_format:
-    - xform/([nl])v/$1ü/
+    - "xlit|1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/- 6347'|ㄅㄆㄇㄈㄉㄊㄋㄌㄍㄎㄏㄐㄑㄒㄓㄔㄕㄖㄗㄘㄙㄧㄨㄩㄚㄛㄜㄝㄞㄟㄠㄡㄢㄣㄤㄥㄦˉˊˇˋ˙ |"
 
-punctuator:
-  import_preset: symbols
-
-key_binder:
-  import_preset: default
-  bindings:
-    # Guard against presets that bind these keys to paging (upstream rime defaults do);
-    # they are Zhuyin keys in this schema.
-    - { when: has_menu, accept: comma, send: comma }      # ㄝ
-    - { when: has_menu, accept: period, send: period }    # ㄡ
-    - { when: has_menu, accept: minus, send: minus }      # ㄦ
-
-recognizer:
-  patterns:
-    uppercase: "^[A-Z][-_+.'0-9A-Za-z]*$"
-    url: "^(www[.]|https?:|ftp:|mailto:).*$"
-    reverse_lookup: "`[a-z]*'?$"
-
-__patch:
-  # 使用八股文語言模型
-  - grammar:/hant?
-  # 用家自選配置（FUTO Keyboard 會寫入 futo_bopomofo.custom.yaml）
-  - futo_bopomofo.custom:/patch?
