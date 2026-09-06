@@ -3,9 +3,13 @@ package org.futo.inputmethod.engine.general
 import android.content.Context
 import android.util.Log
 import androidx.datastore.preferences.core.intPreferencesKey
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import org.futo.inputmethod.latin.uix.SettingsKey
 import org.futo.inputmethod.latin.uix.getSetting
-import org.futo.inputmethod.latin.uix.setSettingBlocking
+import org.futo.inputmethod.latin.uix.setSetting
 import java.io.File
 import java.io.IOException
 
@@ -37,11 +41,23 @@ object BundledRimeAssets {
     val VersionSetting = SettingsKey(intPreferencesKey("ChineseBundledRimeAssetsVersion"), 0)
 
     /**
-     * Makes sure every bundled file exists and is current.
+     * Version written by this process. The persisted setting is written asynchronously (see
+     * [ensure]); this keeps a second call in the same process from copying the files again
+     * before that write has landed.
+     */
+    @Volatile
+    private var ensuredVersion = 0
+
+    private val settingScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /**
+     * Makes sure every bundled file exists and is current. Called on the main thread
+     * (onStartInput), so the version setting is persisted from a background coroutine:
+     * blocking the main thread on the DataStore write here has deadlocked the IME process.
      * @return true if files were written and Rime needs to be redeployed.
      */
     fun ensure(context: Context, shared: File, user: File): Boolean {
-        val upToDate = context.getSetting(VersionSetting) == VERSION
+        val upToDate = (ensuredVersion == VERSION || context.getSetting(VersionSetting) == VERSION)
                 && SHARED_FILES.all { File(shared, it).exists() }
                 && USER_FILES.all { File(user, it).exists() }
         if (upToDate) return false
@@ -51,7 +67,8 @@ object BundledRimeAssets {
             user.mkdirs()
             SHARED_FILES.forEach { copyAsset(context, it, File(shared, it)) }
             USER_FILES.forEach { copyAsset(context, it, File(user, it)) }
-            context.setSettingBlocking(VersionSetting.key, VERSION)
+            ensuredVersion = VERSION
+            settingScope.launch { context.setSetting(VersionSetting.key, VERSION) }
             true
         } catch (e: IOException) {
             // Leave the version setting untouched so the next call retries.
