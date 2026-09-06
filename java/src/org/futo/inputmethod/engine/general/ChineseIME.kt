@@ -52,6 +52,7 @@ import org.futo.inputmethod.latin.uix.FileKind
 import org.futo.inputmethod.latin.uix.FloatingPreEdit
 import org.futo.inputmethod.latin.uix.PreEditListener
 import org.futo.inputmethod.latin.uix.SettingsKey
+import org.futo.inputmethod.latin.uix.UserDictionaryIO
 import org.futo.inputmethod.latin.uix.actions.throwIfDebug
 import org.futo.inputmethod.latin.uix.getSetting
 import org.futo.inputmethod.latin.uix.namePreferenceKeyFor
@@ -549,6 +550,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                         }
                         updateConfig()
                     }
+                    IMEMessage.ReloadPersonalDict -> updateConfig()
                     else -> {}
                 }
             }
@@ -602,7 +604,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         val learning: Boolean,
         val simplification: Boolean,
         val autocorrect: Boolean,
-        val fuzzyMode: Set<ChineseIMESettings.FuzzyPinyinModes>
+        val fuzzyMode: Set<ChineseIMESettings.FuzzyPinyinModes>,
+        /** hashCode of the rendered futo_custom.dict.yaml; a change redeploys so Rime recompiles it. */
+        val customDictHash: Int
     )
     private var prevConfiguration: Configuration? = null
 
@@ -703,7 +707,16 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
                 val learning = settings.isPersonalizationEnabled
 
-                val config = Configuration(schema, learning, simplified, autocorrect, fuzzy)
+                // The personal dictionary's Chinese words as a Rime dictionary (see
+                // ChineseCustomDict). Rendered on every update so that the hash below notices
+                // changes; the file itself is only rewritten when the content differs.
+                val customDict = ChineseCustomDict.render(
+                    ChineseCustomDict.entries(UserDictionaryIO(helper.context).get())
+                )
+
+                val config = Configuration(
+                    schema, learning, simplified, autocorrect, fuzzy, customDict.hashCode()
+                )
                 if (config != prevConfiguration) {
                     if (config != retryConfiguration) {
                         retryConfiguration = config
@@ -712,6 +725,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                         // Already gave up on this configuration (e.g. no dictionary imported);
                         // do not redeploy and block on every start of input. invalidateConfiguration()
                         // (dictionary change, resource reload, clearing the user dictionary) starts over.
+                        return@launch
+                    }
+
+                    if(!ChineseCustomDict.write(getUser(helper.context), customDict)) {
+                        // Leave prevConfiguration untouched so the next update retries; Rime keeps
+                        // using the last successfully compiled personal dictionary.
+                        Log.e(TAG, "Failed to write ${ChineseCustomDict.FILE_NAME}, not deploying")
                         return@launch
                     }
 
