@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.withContext
 import org.futo.inputmethod.engine.ExpandableSuggestionBarConfiguration
 import org.futo.inputmethod.engine.GlobalIMEMessage
 import org.futo.inputmethod.engine.IMEHelper
@@ -605,7 +606,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         val simplification: Boolean,
         val autocorrect: Boolean,
         val fuzzyMode: Set<ChineseIMESettings.FuzzyPinyinModes>,
-        /** hashCode of the rendered futo_custom.dict.yaml; a change redeploys so Rime recompiles it. */
+        /**
+         * hashCode of the rendered futo_custom.dict.yaml; a change redeploys so Rime recompiles
+         * it. 0 for schemas that do not read the dictionary (only the Zhuyin schemas do), so a
+         * personal-dictionary change does not redeploy those.
+         */
         val customDictHash: Int
     )
     private var prevConfiguration: Configuration? = null
@@ -709,13 +714,21 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
                 // The personal dictionary's Chinese words as a Rime dictionary (see
                 // ChineseCustomDict). Rendered on every update so that the hash below notices
-                // changes; the file itself is only rewritten when the content differs.
-                val customDict = ChineseCustomDict.render(
-                    ChineseCustomDict.entries(UserDictionaryIO(helper.context).get())
-                )
+                // changes; the file itself is only rewritten when the content differs. The
+                // ContentResolver query, entries() and render() all do I/O or cross-process work,
+                // so keep them off the main thread.
+                val customDict = withContext(Dispatchers.IO) {
+                    ChineseCustomDict.render(
+                        ChineseCustomDict.entries(UserDictionaryIO(helper.context).get())
+                    )
+                }
+
+                // Only the Zhuyin schemas read futo_custom; do not make a pinyin/stroke user's
+                // personal-dictionary change trigger a redeploy of their (unrelated) schema.
+                val customDictHash = if (schema.startsWith("futo_bopomofo")) customDict.hashCode() else 0
 
                 val config = Configuration(
-                    schema, learning, simplified, autocorrect, fuzzy, customDict.hashCode()
+                    schema, learning, simplified, autocorrect, fuzzy, customDictHash
                 )
                 if (config != prevConfiguration) {
                     if (config != retryConfiguration) {
@@ -728,7 +741,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                         return@launch
                     }
 
-                    if(!ChineseCustomDict.write(getUser(helper.context), customDict)) {
+                    if(!withContext(Dispatchers.IO) { ChineseCustomDict.write(getUser(helper.context), customDict) }) {
                         // Leave prevConfiguration untouched so the next update retries; Rime keeps
                         // using the last successfully compiled personal dictionary.
                         Log.e(TAG, "Failed to write ${ChineseCustomDict.FILE_NAME}, not deploying")

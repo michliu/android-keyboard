@@ -43,6 +43,19 @@ class ChineseCustomDictTest {
     }
 
     @Test
+    fun entriesAreSortedRegardlessOfInputOrder() {
+        val a = ChineseCustomDict.entries(listOf(
+            word("你好", "ㄋㄧˇㄏㄠˇ"),
+            word("天空", "ㄊㄧㄢㄎㄨㄥ"),
+        ))
+        val b = ChineseCustomDict.entries(listOf(
+            word("天空", "ㄊㄧㄢㄎㄨㄥ"),
+            word("你好", "ㄋㄧˇㄏㄠˇ"),
+        ))
+        assertEquals(ChineseCustomDict.render(a), ChineseCustomDict.render(b))
+    }
+
+    @Test
     fun renderEmptyDictionaryIsHeaderOnly() {
         val expected = """
             # Rime dictionary
