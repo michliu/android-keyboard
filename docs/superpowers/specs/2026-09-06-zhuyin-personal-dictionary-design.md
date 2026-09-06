@@ -32,7 +32,9 @@
 2. 新增內建方案 `futo_custom_bopomofo.schema.yaml`，作為 `futo_bopomofo` 的依賴方案，
    用與注音方案相同的拼寫規則（`futo_zhuyin.yaml` 的 luna 規則）替這本詞典編譯 prism，
    因此聲調、免聲調縮寫、大千式鍵位映射全部沿用，使用者怎麼打詞庫詞就怎麼打個人詞。
-3. `futo_bopomofo` 加一個 `table_translator@custom_dict` 讀這本詞典，候選排在詞庫候選之前。
+3. `futo_bopomofo` 加一個 `script_translator@custom_dict` 讀這本詞典，候選排在詞庫候選之前。
+   （不能用 `table_translator`：它把整段輸入當成單一編碼查表，這是 custom_phrase 與倉頡類方案的模型，
+   不會按音節圖比對多音節的個人詞；真機驗證時個人詞完全不出現。）
 4. 設定頁開放中文，提供注音專用的新增/編輯對話框，讀音由對話框內建的注音符號按鍵輸入。
 5. 存詞後透過既有的 `IMEMessage.ReloadPersonalDict` 通知 `ChineseIME` 重新產生詞典並部署。
 
@@ -87,6 +89,11 @@
   ```
 
   沒有任何詞時只有表頭，仍是合法詞典。
+- 表頭之後、真實詞條之後固定附加 256 筆填充詞條 `pad0…pad255`，編碼 `#`、權重 1。
+  原因：librime 1.16 建表時以 `4096 + 32 × 音節數 + 64 × 詞條數` 估算檔案大小，字串表（marisa trie）
+  的固定開銷有數 KB，只有幾個詞的詞典會超出估算而觸發檔案擴大，`metadata_` 指標懸空，
+  部署在 `rime::Table::OnBuildFinish` 以 SIGSEGV 崩潰並不斷重啟。`#` 不在注音 speller 的
+  alphabet 內（會交給 punctuator），填充詞永遠打不出來；文字不能以 `#` 開頭，否則被當成註解。
 - `fun write(userDir: File, content: String): Boolean`：內容與現有檔案相同時不寫入、回傳 true；
   寫入失敗（IOException）記錄日誌並回傳 false。
 - `content.hashCode()` 作為設定指紋（見下）。
@@ -122,7 +129,7 @@
   聲調規則固定用 `luna_tones`（詞典沒有聲調），terra 布局下也一樣。
 - `futo_bopomofo.schema.yaml`：`schema/dependencies` 加 `futo_custom_bopomofo`；
   `engine/translators` 在 `punct_translator` 之後、`table_translator@custom_phrase` 之前
-  加 `table_translator@custom_dict`；新增：
+  加 `script_translator@custom_dict`；新增：
 
   ```yaml
   custom_dict:
@@ -131,21 +138,32 @@
     enable_completion: false
     enable_sentence: false
     enable_user_dict: false
-    initial_quality: 1
+    initial_quality: 1000000000000
+    preedit_format:
+      - "xlit|1qaz2wsxedcrfv5tgbyhnujm8ik,9ol.0p;/- 6347'|ㄅㄆㄇㄈㄉㄊㄋㄌㄍㄎㄏㄐㄑㄒㄓㄔㄕㄖㄗㄘㄙㄧㄨㄩㄚㄛㄜㄝㄞㄟㄠㄡㄢㄣㄤㄥㄦˉˊˇˋ˙ |"
   ```
 
   `enable_completion: false`：只有整個輸入的音節序列與詞完全對應時才出現，
   避免打單字時被個人詞插隊。省略末尾聲調仍能匹配，因為 prism 本身含無聲調形式。
+  候選品質是 `exp(權重) + initial_quality`，詞庫詞的權重可達數萬以上，所以用極大的
+  `initial_quality` 保證個人詞永遠排在詞庫候選之前；`preedit_format` 與主 translator 相同，
+  否則個人詞成為首選時預編輯會顯示原始按鍵而不是注音。
 - `futo_bopomofo_terra.schema.yaml`：透過 `__include` 已繼承 `engine` 與 `custom_dict`；
   其自行宣告的 `schema/dependencies` 同樣加 `futo_custom_bopomofo`。
 - `default.custom.yaml` 不變：依賴方案不需要列在 `schema_list`。
-- `BundledRimeAssets`：`SHARED_FILES` 加 `futo_custom_bopomofo.schema.yaml`，`VERSION` 升為 2。
+- `BundledRimeAssets`：`SHARED_FILES` 加 `futo_custom_bopomofo.schema.yaml`，`VERSION` 升為 3。
+  `ensure()` 在主執行緒（`onStartInput`）被呼叫，原本以 `setSettingBlocking`（`runBlocking`）
+  寫版本號，在真機上造成主執行緒死鎖（ANR，卡住 3 分鐘以上）；改為在 IO 協程寫入，
+  並以程序內的 `ensuredVersion` 避免同一程序重複複製。
 
 ### 4. `ChineseIME` 變更
 
-- `Configuration` 增加 `customDictHash: Int`。
-- `updateConfig()` 在組出 `Configuration` 前：讀 `UserDictionaryIO(context).get()`，
-  經 `ChineseCustomDict.entries` / `render` 得到內容與 hash。
+- `Configuration` 增加 `customDictHash: Int`；只有 `futo_bopomofo*` 方案用詞典內容的 hash，
+  其他方案固定為 0，拼音、筆畫布局不會因中文個人詞變動而重新部署（詞典檔仍無條件寫出）。
+- `updateConfig()` 在組出 `Configuration` 前：在 `Dispatchers.IO` 讀 `UserDictionaryIO(context).get()`
+  （跨程序 ContentResolver 查詢），經 `ChineseCustomDict.entries` / `render` 得到內容與 hash；
+  `entries` 依詞、編碼、權重排序，指紋不受 provider 回傳順序影響。
+  IO 區段是掛起點，回來後再檢查一次 `editingState.active`，避免編輯會話中重新部署。
   `config != prevConfiguration` 時，在 `writeCustomizationFile` 旁呼叫 `ChineseCustomDict.write`；
   寫入失敗就結束本次 `updateConfig()`（不部署、`prevConfiguration` 維持不變），
   成功則照原流程 `rime.deploy()` + `selectSchema`。
@@ -157,7 +175,7 @@
   所以 `futo_custom.dict.yaml` 在任何部署前都存在。
   `onStartInput` 中 `BundledRimeAssets.ensure` 回傳 true 時會先立即 `rime.deploy()` 一次；
   那次部署詞典可能還不存在，只會記錄一條錯誤，接著的 `updateConfig()` 會再部署一次補上。
-- 讀取 `UserDictionaryIO` 需要 `Context`，在 `coroScope` 內進行，不在主執行緒。
+- `coroScope` 是 `Dispatchers.Main`，所以讀個人字典、渲染與寫檔都包在 `withContext(Dispatchers.IO)`。
 
 ### 5. 設定頁
 
