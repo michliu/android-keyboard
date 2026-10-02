@@ -385,6 +385,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     private fun handlePassByMessage(x11Code: Int, mask: Int) {
+        // A passed-back key is user input; associations shown for an earlier commit no longer apply.
+        endAssociation()
         when (x11Code) {
             XK_BackSpace -> sendDownUpKeyEvent(KeyEvent.KEYCODE_DEL, 0)
             XK_Tab       -> sendDownUpKeyEvent(KeyEvent.KEYCODE_TAB, 0)
