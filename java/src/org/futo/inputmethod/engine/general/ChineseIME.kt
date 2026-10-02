@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import icu.astronot233.rime.DeployStage
 import icu.astronot233.rime.Rime
@@ -61,6 +62,7 @@ import org.futo.inputmethod.latin.uix.preferenceKeyFor
 import org.futo.inputmethod.latin.uix.setSetting
 import org.futo.inputmethod.latin.uix.settings.CollapsibleSection
 import org.futo.inputmethod.latin.uix.settings.DropDownPickerSettingItem
+import org.futo.inputmethod.latin.uix.settings.SettingToggleDataStore
 import org.futo.inputmethod.latin.uix.settings.SettingToggleRaw
 import org.futo.inputmethod.latin.uix.settings.UserSetting
 import org.futo.inputmethod.latin.uix.settings.UserSettingsMenu
@@ -69,6 +71,7 @@ import org.futo.inputmethod.latin.utils.ZipFileHelper
 import org.futo.inputmethod.latin.utils.toEnumOrNull
 import org.futo.inputmethod.v2keyboard.KeyboardLayoutSetV2
 import java.io.File
+import java.io.IOException
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
@@ -150,6 +153,11 @@ object ChineseIMESettings {
         ""
     )
 
+    val AssociationSetting = SettingsKey(
+        booleanPreferencesKey("ChineseIME_association"),
+        true
+    )
+
     var schemaList: List<RimeSchema> = emptyList()
     val menu = UserSettingsMenu(
         title = R.string.chinese_settings_title,
@@ -212,6 +220,14 @@ object ChineseIMESettings {
 
             },
 
+            UserSetting(R.string.chinese_setting_association, R.string.chinese_setting_association_subtitle) {
+                SettingToggleDataStore(
+                    stringResource(R.string.chinese_setting_association),
+                    AssociationSetting,
+                    subtitle = stringResource(R.string.chinese_setting_association_subtitle)
+                )
+            },
+
         )
     )
 }
@@ -248,6 +264,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private var layoutHint: String? = null
     private val rawInput = InputKeeper()
     private val rimeLoading = mutableStateOf(false)
+
+    /** Associated phrases (聯想詞); null until loaded, or when the dictionary has no essay.txt. */
+    private var association: ChineseAssociation? = null
+    private var associationJob: Job? = null
+    /** Text the shown associations continue; null when no associations are shown. */
+    private var associationContext: String? = null
+    private var associationWords: List<String> = emptyList()
 
     override fun getLoadingState(): MutableState<Boolean>? = rimeLoading
 
@@ -403,6 +426,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         }
         is RimeMessage.Commit -> {
             connect?.commitText(msg.value, 1)
+            showAssociations(msg.value, msg.value)
         }
         is RimeMessage.Passby -> {
             val (x11Code, mask) = msg.value
@@ -496,6 +520,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             }
         }
 
+        // Rime clears its candidates after a commit; keep the associations shown for that commit.
+        if(cdd.isEmpty() && associationContext != null) return@onEach
+
         val suggestWordList = cdd.mapIndexed { index, candidate -> SuggestedWordInfo(
             candidate.text,
             "",
@@ -527,6 +554,86 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             )
         )
     }.launchIn(coroScope)
+
+    /**
+     * Loads the associated-phrase index in the background, once per dictionary. Only the Zhuyin
+     * layout uses it, so pinyin and stroke users do not pay for the index.
+     */
+    private fun ensureAssociationLoaded(reload: Boolean = false) {
+        if(reload) {
+            associationJob?.cancel()
+            associationJob = null
+            association = null
+        }
+        if(!isBopomofo || associationJob != null) return
+        associationJob = coroScope.launch {
+            val start = SystemClock.elapsedRealtime()
+            association = withContext(Dispatchers.IO) {
+                try {
+                    ChineseAssociation.load(getShared(helper.context))
+                } catch(e: IOException) {
+                    Log.e(TAG, "Failed to load associated phrases", e)
+                    null
+                }
+            }
+            Log.i(TAG, "Associated phrases: ${association?.size ?: 0} keys in ${SystemClock.elapsedRealtime() - start} ms")
+        }
+    }
+
+    /**
+     * Shows the phrases that follow [context] in the suggestion strip, or ends the association if
+     * there are none. [committed] is the text that was just committed (the end of [context]).
+     */
+    private fun showAssociations(context: String, committed: String) {
+        val words = association?.lookup(context).orEmpty()
+        val show = words.isNotEmpty()
+                && isBopomofo && !isOnEnglishPage
+                && !editingState.active && rawInput.text.isEmpty()
+                && prevConfiguration?.simplification != true
+                && helper.context.getSetting(ChineseIMESettings.AssociationSetting)
+                // A key typed right after the commit (e.g. a digit, which bypasses Rime) has
+                // already ended the association; do not bring it back for text that is no longer
+                // in front of the cursor.
+                && connect?.getTextBeforeCursor(committed.length, 0)?.toString() == committed
+        if(!show) {
+            endAssociation()
+            return
+        }
+
+        associationContext = context
+        associationWords = words
+        val suggestWordList = words.mapIndexed { index, word -> SuggestedWordInfo(
+            word,
+            "",
+            Int.MAX_VALUE - index,
+            1,
+            null,
+            SuggestedWordInfo.NOT_AN_INDEX,
+            SuggestedWordInfo.NOT_A_CONFIDENCE,
+            index,
+            null
+        ) }.let { ArrayList(it) }
+        showSuggestionStrip(
+            SuggestedWords(
+                suggestWordList,
+                suggestWordList,
+                null,
+                false,
+                false,
+                false,
+                0,
+                0,
+                0
+            )
+        )
+    }
+
+    private fun endAssociation() {
+        if(associationContext == null) return
+        associationContext = null
+        associationWords = emptyList()
+        setNeutralSuggestionStrip()
+    }
 
     override fun onCreate() {
         if (!rime.startup(false))
@@ -566,6 +673,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     override fun onStartInput() {
+        endAssociation()
         // Order matters: extracting the dictionary wipes the shared directory, so the bundled
         // schemas are (re)copied afterwards.
         val dictionaryChanged = resetSharedFromResources(helper.context, helper.lifecycleScope)
@@ -577,6 +685,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             coroScope.launch { rime.deploy() }
         }
         updateConfig()
+        ensureAssociationLoaded(reload = dictionaryChanged)
     }
 
     private fun isSimplifiedChinese(locale: Locale): Boolean {
@@ -796,10 +905,12 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
     override fun onLayoutUpdated(layout: KeyboardLayoutSetV2) {
         layoutHint = layout.mainLayout.imeHint
+        ensureAssociationLoaded()
         if(helper.isImeActive(this)) updateConfig()
     }
 
     override fun onFinishInput() {
+        endAssociation()
         if(editingState.active) return
         coroScope.launch {
             waitingToSelect = null
@@ -952,6 +1063,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         when (event.eventType) {
             Event.EVENT_TYPE_INPUT_KEYPRESS,
             Event.EVENT_TYPE_INPUT_KEYPRESS_RESUMED -> {
+                endAssociation()
                 if (triggerIfIsAction(event.mKeyCode))
                     return
                 if(isBopomofo && !editingState.active) {
@@ -992,8 +1104,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
             Event.EVENT_TYPE_SUGGESTION_PICKED -> {
                 val suggestion = event.mSuggestedWordInfo ?: return
+                val context = associationContext
                 if (suggestion.isKindOf(SuggestedWordInfo.KIND_UNDO)) {
+                    endAssociation()
                     connect?.commitText(suggestion.word, 1)
+                } else if (context != null &&
+                    associationWords.getOrNull(suggestion.mCandidateIndex) == suggestion.word) {
+                    connect?.commitText(suggestion.word, 1)
+                    showAssociations(context + suggestion.word, suggestion.word)
                 } else {
                     coroScope.launch {
                         if(!rime.selectCandidate(suggestion.mCandidateIndex)) {
@@ -1004,10 +1122,12 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             }
 
             Event.EVENT_TYPE_SOFTWARE_GENERATED_STRING -> {
+                endAssociation()
                 interruptInput(event.mText)
             }
 
             Event.EVENT_TYPE_DOWN_UP_KEYEVENT -> {
+                endAssociation()
                 interruptInput()
                 if (event.mX == KeyEvent.META_CTRL_ON) when (event.mKeyCode) {
                     KeyEvent.KEYCODE_F1 -> {
@@ -1040,6 +1160,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
     private var currentMovingCursor: Int = 0
     override fun onMovePointer(steps: Int, stepOverWords: Boolean, select: Boolean?) {
+        endAssociation()
         var meta = 0
         if (stepOverWords) meta = meta or KeyEvent.META_CTRL_ON
         if (select == true) meta = meta or KeyEvent.META_SHIFT_ON
@@ -1057,6 +1178,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         // TODO("Unsupported yet")
     }
     override fun onMoveDeletePointer(steps: Int) {
+        endAssociation()
         setNeutralSuggestionStrip()
         val (lBound, rBound) = currentAnchorCursor
         currentMovingCursor = when {
@@ -1179,5 +1301,5 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 // Non-behavior methods }}
 
     val debugInfo: String
-        get() = "configuration=${prevConfiguration}\nlayoutHint=${layoutHint}\nlocale=${Settings.getInstance().current.mLocale}\nisSimplified=${isSimplifiedChinese(Settings.getInstance().current.mLocale)}\nrawInput=${rawInput.text}"
+        get() = "configuration=${prevConfiguration}\nlayoutHint=${layoutHint}\nlocale=${Settings.getInstance().current.mLocale}\nisSimplified=${isSimplifiedChinese(Settings.getInstance().current.mLocale)}\nrawInput=${rawInput.text}\nassociation=${association?.size}"
 }
