@@ -13,8 +13,9 @@
   也沒有前綴查詢介面，聯想必須在 `ChineseIME` 層自行實作。
 - 注音方案使用 `luna_pinyin` 詞庫，來自使用者匯入的 `zidian.dict`（zip），解壓到
   `<externalFiles>/rime/shared`。`luna_pinyin.dict.yaml` 以 `use_preset_vocabulary`
-  引用 `essay.txt`（每行「詞\t權重」）作為詞組來源；**zip 內是否附 `essay.txt` 原始檔尚未確認**，
-  實作第一步必須在真機上檢查 `rime/shared` 內容。
+  引用 `essay.txt` 作為詞組來源。已在真機確認 `zidian-v26.02` 的 `rime/shared` 附有 `essay.txt`
+  （5.9MB、442,714 行、每行 `詞<TAB>權重`、繁體）；例如「你」開頭依權重為：
+  的、們、可以、要、會、就、是、好…
 - Rime 的上屏一律經 `RimeMessage.Commit`（`subscribeToRimeMessage`），其中也包含標點；
   標點不會在索引中命中，自然不產生聯想。
 - 候選列由 `subscribeToRimeCandidates` 更新；上屏後 Rime 會送出空候選清單，
