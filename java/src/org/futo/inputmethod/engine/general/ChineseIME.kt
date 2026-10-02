@@ -1001,6 +1001,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 rawInput.clear()
                 if(composing) rime.commitComposition()
                 connect?.commitText(String(Character.toChars(codePoint)), 1)
+                // Committing the composition above may have shown associations for it; the
+                // key's own text now follows, so they no longer apply.
+                endAssociation()
             }
             return true
         }
