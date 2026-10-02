@@ -271,6 +271,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     /** Text the shown associations continue; null when no associations are shown. */
     private var associationContext: String? = null
     private var associationWords: List<String> = emptyList()
+    private var associationCommitted: String = ""
 
     override fun getLoadingState(): MutableState<Boolean>? = rimeLoading
 
@@ -546,7 +547,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         }
 
         showSuggestionStrip(candidateWords(cdd.map { it.text }, cdd.map { it.comment }))
-        }.launchIn(coroScope)
+    }.launchIn(coroScope)
 
     /**
      * Loads the associated-phrase index in the background, once per dictionary. Only the Zhuyin
@@ -600,6 +601,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
         associationContext = context
         associationWords = words
+        associationCommitted = committed
         showSuggestionStrip(candidateWords(words))
     }
 
@@ -607,7 +609,19 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         if(associationContext == null) return
         associationContext = null
         associationWords = emptyList()
+        associationCommitted = ""
         setNeutralSuggestionStrip()
+    }
+
+    override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int, composingSpanStart: Int, composingSpanEnd: Int) {
+        if(associationContext == null) return
+        // The user moved the cursor, selected text, or the app changed the text (e.g. cleared the
+        // field after sending): the shown associations no longer follow the text at the cursor.
+        // Our own commits pass this check, since they leave the committed text before the cursor.
+        if(newSelStart != newSelEnd ||
+            connect?.getTextBeforeCursor(associationCommitted.length, 0)?.toString() != associationCommitted) {
+            endAssociation()
+        }
     }
 
     override fun onCreate() {
@@ -879,6 +893,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     override fun onLayoutUpdated(layout: KeyboardLayoutSetV2) {
+        endAssociation()
         layoutHint = layout.mainLayout.imeHint
         ensureAssociationLoaded()
         if(helper.isImeActive(this)) updateConfig()
@@ -1089,7 +1104,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 } else if (context != null &&
                     associationWords.getOrNull(suggestion.mCandidateIndex) == suggestion.word) {
                     connect?.commitText(suggestion.word, 1)
-                    showAssociations(context + suggestion.word, suggestion.word)
+                    val next = (context + suggestion.word).let { it.substring(it.offsetByCodePoints(it.length, -minOf(2, it.codePointCount(0, it.length)))) }
+                    showAssociations(next, suggestion.word)
                 } else {
                     coroScope.launch {
                         if(!rime.selectCandidate(suggestion.mCandidateIndex)) {
@@ -1232,6 +1248,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     override fun requestSuggestionRefresh() {
+        endAssociation()
         showSuggestionStrip(null)
     }
 
@@ -1275,7 +1292,6 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     override fun onCancelInput() {}
     override fun onDeviceUnlocked() {}
     override fun onOrientationChanged() {}
-    override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int, composingSpanStart: Int, composingSpanEnd: Int) {}
 // Non-behavior methods }}
 
     val debugInfo: String
