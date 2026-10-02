@@ -22,6 +22,7 @@ import icu.astronot233.rime.X11Keys.XK_BackSpace
 import icu.astronot233.rime.X11Keys.XK_Linefeed
 import icu.astronot233.rime.X11Keys.XK_Return
 import icu.astronot233.rime.X11Keys.XK_Tab
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -71,7 +72,6 @@ import org.futo.inputmethod.latin.utils.ZipFileHelper
 import org.futo.inputmethod.latin.utils.toEnumOrNull
 import org.futo.inputmethod.v2keyboard.KeyboardLayoutSetV2
 import java.io.File
-import java.io.IOException
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
@@ -508,6 +508,16 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         }
     }
 
+    /** Suggestion-strip words for candidates or associations; [comments] may be shorter than [words]. */
+    private fun candidateWords(words: List<String>, comments: List<String?> = emptyList()): SuggestedWords {
+        val infos = words.mapIndexed { index, word -> SuggestedWordInfo(
+            word, "", Int.MAX_VALUE - index, 1, null,
+            SuggestedWordInfo.NOT_AN_INDEX, SuggestedWordInfo.NOT_A_CONFIDENCE,
+            index, comments.getOrNull(index)
+        ) }.let { ArrayList(it) }
+        return SuggestedWords(infos, infos, null, false, false, false, 0, 0, 0)
+    }
+
     private fun subscribeToRimeCandidates() = rime.candidatesFlow.onEach { cdd ->
         waitingToSelect?.let { sel ->
             if(cdd.getOrNull(sel.second)?.text == sel.first) {
@@ -523,37 +533,18 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         // Rime clears its candidates after a commit; keep the associations shown for that commit.
         if(cdd.isEmpty() && associationContext != null) return@onEach
 
-        val suggestWordList = cdd.mapIndexed { index, candidate -> SuggestedWordInfo(
-            candidate.text,
-            "",
-            Int.MAX_VALUE - index,
-            1,
-            null,
-            SuggestedWordInfo.NOT_AN_INDEX,
-            SuggestedWordInfo.NOT_A_CONFIDENCE,
-            index,
-            candidate.comment
-        ) }.let { ArrayList(it) }
+        if(cdd.isNotEmpty()) {
+            associationContext = null
+            associationWords = emptyList()
+        }
 
         // Don't flicker an empty suggest bar when editing
-        if(editingState != EditingState.NotEditing && suggestWordList.isEmpty()) {
+        if(editingState != EditingState.NotEditing && cdd.isEmpty()) {
             return@onEach
         }
 
-        showSuggestionStrip(
-            SuggestedWords(
-                suggestWordList,
-                suggestWordList,
-                null,
-                false,
-                false,
-                false,
-                0,
-                0,
-                0
-            )
-        )
-    }.launchIn(coroScope)
+        showSuggestionStrip(candidateWords(cdd.map { it.text }, cdd.map { it.comment }))
+        }.launchIn(coroScope)
 
     /**
      * Loads the associated-phrase index in the background, once per dictionary. Only the Zhuyin
@@ -571,8 +562,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             association = withContext(Dispatchers.IO) {
                 try {
                     ChineseAssociation.load(getShared(helper.context))
-                } catch(e: IOException) {
+                } catch(e: CancellationException) {
+                    throw e
+                } catch(e: Exception) {
                     Log.e(TAG, "Failed to load associated phrases", e)
+                    null
+                } catch(e: OutOfMemoryError) {
+                    Log.e(TAG, "Out of memory loading associated phrases", e)
                     null
                 }
             }
@@ -588,7 +584,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         val words = association?.lookup(context).orEmpty()
         val show = words.isNotEmpty()
                 && isBopomofo && !isOnEnglishPage
-                && !editingState.active && rawInput.text.isEmpty()
+                && !editingState.active
                 && prevConfiguration?.simplification != true
                 && helper.context.getSetting(ChineseIMESettings.AssociationSetting)
                 // A key typed right after the commit (e.g. a digit, which bypasses Rime) has
@@ -602,30 +598,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
         associationContext = context
         associationWords = words
-        val suggestWordList = words.mapIndexed { index, word -> SuggestedWordInfo(
-            word,
-            "",
-            Int.MAX_VALUE - index,
-            1,
-            null,
-            SuggestedWordInfo.NOT_AN_INDEX,
-            SuggestedWordInfo.NOT_A_CONFIDENCE,
-            index,
-            null
-        ) }.let { ArrayList(it) }
-        showSuggestionStrip(
-            SuggestedWords(
-                suggestWordList,
-                suggestWordList,
-                null,
-                false,
-                false,
-                false,
-                0,
-                0,
-                0
-            )
-        )
+        showSuggestionStrip(candidateWords(words))
     }
 
     private fun endAssociation() {
