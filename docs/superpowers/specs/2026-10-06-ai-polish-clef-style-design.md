@@ -36,7 +36,7 @@ Clef（`@cf/cloudflare/clef`）是分類模型：輸入一段內容和一組問�
 - 回應解析：讀 `result.answers.scene.choice`、`result.answers.scene.confidence`、`result.answers.tone.score`。`choice` 不是這四個鍵之一時，`scene` 為 null。
 - 共用現有的 `PolishTransport`，方便用假 transport 寫單元測試。
 - 失敗情況（帳號 ID 或 token 空白、網路錯誤、非 2xx、`success` 為 false、JSON 無法解析）一律回傳 `Result.failure`；`CancellationException` 要往外拋。
-- 逾時 5 秒：用 `withTimeout` 包住呼叫，逾時視為失敗。
+- 逾時 5 秒：`HttpUrlPolishTransport` 改成可以傳入逾時毫秒數（預設維持 60 秒），Clef 用 5 秒的連線和讀取逾時，逾時視為失敗。不用 `withTimeout`，因為它無法中斷阻塞中的 `HttpURLConnection`。
 
 ### `PolishStyle.kt`（`actions/aipolish`）
 
