@@ -22,13 +22,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -38,6 +40,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,6 +55,8 @@ import org.futo.inputmethod.latin.uix.KeyboardManagerForAction
 import org.futo.inputmethod.latin.uix.LocalKeyboardScheme
 import org.futo.inputmethod.latin.uix.getSetting
 import org.futo.inputmethod.latin.uix.theme.Typography
+
+private const val TAG = "AiPolish"
 
 private sealed class PolishState {
     object Idle : PolishState()
@@ -106,7 +111,7 @@ private class AiPolishWindow(
     val detectedHarsh: MutableState<Boolean> = mutableStateOf(false)
 
     /** Once the user picks a style by hand, a late Clef answer must not overwrite it. */
-    private var styleTouched = false
+    private val styleTouched: MutableState<Boolean> = mutableStateOf(false)
 
     private var detectJob: Job? = null
 
@@ -123,21 +128,24 @@ private class AiPolishWindow(
                 onSuccess = { result ->
                     val choice = StyleChoice.from(result)
                     detectedHarsh.value = choice.soften
-                    if (!styleTouched) style.value = choice
+                    if (!styleTouched.value) style.value = choice
                     detection.value = Detection.Done
                 },
-                onFailure = { detection.value = Detection.Failed },
+                onFailure = {
+                    android.util.Log.w(TAG, "Style detection failed: ${it.message}")
+                    detection.value = Detection.Failed
+                },
             )
         }
     }
 
     private fun pickScene(scene: Scene) {
-        styleTouched = true
+        styleTouched.value = true
         style.value = style.value.copy(scene = if (style.value.scene == scene) null else scene)
     }
 
     private fun toggleSoften() {
-        styleTouched = true
+        styleTouched.value = true
         style.value = style.value.copy(soften = !style.value.soften)
     }
 
@@ -245,9 +253,22 @@ private class AiPolishWindow(
         ) { content() }
     }
 
-    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun StyleRow() {
+        val scheme = LocalKeyboardScheme.current
+        val chipColors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = scheme.primary,
+            selectedLabelColor = scheme.onPrimary,
+            selectedLeadingIconColor = scheme.onPrimary,
+            labelColor = scheme.onSurface,
+        )
+        val checkIcon: @Composable () -> Unit = {
+            Icon(
+                painterResource(R.drawable.check),
+                contentDescription = null,
+                modifier = Modifier.size(FilterChipDefaults.IconSize)
+            )
+        }
         Label(R.string.action_ai_polish_style_label)
         Row(
             modifier = Modifier
@@ -260,16 +281,20 @@ private class AiPolishWindow(
                     selected = style.value.scene == scene,
                     onClick = { pickScene(scene) },
                     label = { Text(stringResource(label)) },
+                    leadingIcon = if (style.value.scene == scene) checkIcon else null,
+                    colors = chipColors,
                 )
             }
             FilterChip(
                 selected = style.value.soften,
                 onClick = { toggleSoften() },
                 label = { Text(stringResource(R.string.action_ai_polish_style_soften)) },
+                leadingIcon = if (style.value.soften) checkIcon else null,
+                colors = chipColors,
             )
         }
         val status = when {
-            detection.value == Detection.Running -> R.string.action_ai_polish_style_detecting
+            detection.value == Detection.Running && !styleTouched.value -> R.string.action_ai_polish_style_detecting
             detection.value == Detection.Failed -> R.string.action_ai_polish_style_failed
             detection.value == Detection.Done && detectedHarsh.value && style.value.soften ->
                 R.string.action_ai_polish_style_harsh
