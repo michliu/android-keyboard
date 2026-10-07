@@ -727,4 +727,15 @@ Default is %1$s</string>
     <string name="action_ai_polish_edit_prompt">Edit</string>
     <string name="action_ai_polish_done">Done</string>
     <string name="action_ai_polish_copied">Copied</string>
+    <string name="action_ai_polish_setting_clef_account_id">Cloudflare account ID (style detection)</string>
+    <string name="action_ai_polish_setting_clef_api_token">Cloudflare API token (style detection)</string>
+    <string name="action_ai_polish_style_label">Style</string>
+    <string name="action_ai_polish_style_chat">Chat</string>
+    <string name="action_ai_polish_style_email">Email</string>
+    <string name="action_ai_polish_style_formal">Formal</string>
+    <string name="action_ai_polish_style_social">Social</string>
+    <string name="action_ai_polish_style_soften">Soften tone</string>
+    <string name="action_ai_polish_style_detecting">Detecting style…</string>
+    <string name="action_ai_polish_style_failed">Could not detect the style</string>
+    <string name="action_ai_polish_style_harsh">⚠ The tone seems harsh; it will be softened</string>
 </resources>
