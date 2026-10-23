@@ -920,6 +920,12 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             appendLine("        - name: futo_zh_simp")
             appendLine("          reset: ${if(cfg.simplification) 1 else 0}")
             appendLine("          states: [ 漢字, 汉字 ]")
+            // Taiwan character forms, Zhuyin only (see futo_bopomofo.schema.yaml).
+            if(schema.startsWith("futo_bopomofo")) {
+                appendLine("        - name: futo_zh_tw")
+                appendLine("          reset: ${if(cfg.simplification) 0 else 1}")
+                appendLine("          states: [ 傳統, 臺灣 ]")
+            }
             appendLine("    simplifier/option_name: futo_zh_simp")
 
             // Fuzzy pinyin only added to pinyin layouts

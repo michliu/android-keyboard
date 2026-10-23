@@ -23,7 +23,7 @@ object BundledRimeAssets {
     private const val ASSET_DIR = "rime"
 
     /** Bump whenever any file under assets/rime changes, so existing installs are refreshed. */
-    const val VERSION = 4
+    const val VERSION = 5
 
     /** Copied into the Rime shared directory (recreated whenever the dictionary is re-extracted). */
     val SHARED_FILES = listOf(
