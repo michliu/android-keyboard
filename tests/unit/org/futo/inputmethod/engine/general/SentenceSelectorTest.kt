@@ -17,6 +17,12 @@ class SentenceSelectorTest {
     }
 
     @Test
+    fun laterCandidateEqualToTheRest() {
+        // Selecting the whole word lets Rime learn it, rather than 登 then 記.
+        assertEquals(1, SentenceSelector.next(listOf("等級", "登記", "登"), "登記"))
+    }
+
+    @Test
     fun noWordLeadsThere() {
         assertEquals(-1, SentenceSelector.next(listOf("青島登記處", "青島", "清"), "請到登記處"))
         assertEquals(-1, SentenceSelector.next(emptyList(), "請到"))

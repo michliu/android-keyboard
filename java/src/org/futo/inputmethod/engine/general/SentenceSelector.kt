@@ -15,7 +15,7 @@ object SentenceSelector {
         if (candidates.firstOrNull() == remaining) return 0
         var best = -1
         candidates.forEachIndexed { i, c ->
-            if (c.isNotEmpty() && c.length < remaining.length && remaining.startsWith(c) &&
+            if (c.isNotEmpty() && c.length <= remaining.length && remaining.startsWith(c) &&
                 (best < 0 || c.length > candidates[best].length)) best = i
         }
         return best
