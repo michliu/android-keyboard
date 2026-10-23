@@ -318,6 +318,18 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private var charReadingsJob: Job? = null
     private val rerankDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     private var rerankJob: Job? = null
+    /** What [rerankJob] was launched for: the preedit and the candidate texts; null when none. */
+    private var rerankKey: Pair<String, List<String>>? = null
+    /** A rerank result shown in the strip, kept to show it again after Rime's order is redrawn. */
+    private class RerankResult(
+        val key: Pair<String, List<String>>,
+        val order: IntArray,
+        val override: SentenceChoice?,
+        val words: List<String>,
+        val comments: List<String?>,
+    )
+    /** The result [rerankJob] applied, if it changed the strip; null otherwise. */
+    private var rerankApplied: RerankResult? = null
     /** Display position → Rime index of the candidates shown; null while they are in Rime's order. */
     private var candidateOrder: IntArray? = null
     /** The dictionary's words for whole-sentence candidates; null until loaded or built, or after it failed. */
@@ -533,7 +545,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         if(sentenceOverride.let { it != null && it.preedit != ped }) {
             candidateOrder = null
             sentenceOverride = null
-            rerankJob?.cancel()
+            cancelRerank()
             val candidates = rime.candidatesFlow.value
             // Empty: a commit, whose associations stay; the candidates collector handles the rest.
             if(ped.isNotEmpty() && notEditing && candidates.isNotEmpty()) {
@@ -551,7 +563,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
     override fun onStartEdit() {
         editingState = EditingState.Editing
-        rerankJob?.cancel()
+        cancelRerank()
         candidateOrder = null
         sentenceOverride = null
     }
@@ -626,15 +638,18 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     private fun subscribeToRimeCandidates() = rime.candidatesFlow.onEach { cdd ->
-        // New candidates are always shown in Rime's order first.
+        // New candidates are always shown in Rime's order first; maybeRerank below shows a
+        // result for them again, or lets a job already scoring them (started by the preedit
+        // collector) finish. Only when it is not called is the job cancelled here.
         candidateOrder = null
         sentenceOverride = null
-        rerankJob?.cancel()
+        if(cdd.isEmpty()) cancelRerank()
 
         waitingToSelect?.let { sel ->
             if(cdd.getOrNull(sel.second)?.text == sel.first) {
                 if(rime.selectCandidate(sel.second)) {
                     waitingToSelect = null
+                    cancelRerank()
                     return@onEach
                 } else {
                     Log.e(TAG, "Error selecting candidate!")
@@ -846,8 +861,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
      * are dropped.
      */
     private fun maybeRerank(candidates: List<RimeCandidate>) {
-        rerankJob?.cancel()
-        rerankJob = null
+        val preedit = rime.preeditFlow.value
+        // Each key reaches here twice (preedit, then candidates): score each composition once.
+        val key = preedit to candidates.map { it.text }
+        if(key == rerankKey && reuseRerank(key)) return
+        cancelRerank()
         val scorer = scorer ?: return
         if(sentenceCommitting) return
         if(!isBopomofo || isOnEnglishPage || editingState.active) return
@@ -861,10 +879,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             InputTypeUtils.isVisiblePasswordInputType(info.inputType) ||
             (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0) return
 
-        val preedit = rime.preeditFlow.value
         val (chosen, reading) = ZhuyinReading.splitSelected(preedit) ?: return
         if(reading.size in SentenceNBest.SYLLABLES) {
-            maybeRerankSentence(scorer, candidates, preedit, chosen, reading)
+            maybeRerankSentence(scorer, candidates, key, chosen, reading)
             return
         }
         // Words the user already chose are only handled for sentences.
@@ -882,6 +899,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         val context = connect?.getTextBeforeCursor(RerankContextChars, 0)?.toString().orEmpty()
         if(reading.size == 1 && context.isEmpty()) return
 
+        rerankKey = key
         rerankJob = coroScope.launch {
             val start = SystemClock.elapsedRealtime()
             val scores = withContext(rerankDispatcher) {
@@ -907,8 +925,46 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             val order = ZhuyinReranker.order(words.size, scorable, scores) ?: return@launch
             if(editingState.active || isOnEnglishPage || !isBopomofo) return@launch
             candidateOrder = order
-            showSuggestionStrip(candidateWords(order.map { words[it] }, order.map { candidates[it].comment }))
+            val shown = order.map { words[it] }
+            val comments = order.map { candidates[it].comment }
+            rerankApplied = RerankResult(key, order, null, shown, comments)
+            showSuggestionStrip(candidateWords(shown, comments))
         }
+    }
+
+    /** Cancels [rerankJob] and forgets what it was for and what it showed. */
+    private fun cancelRerank() {
+        rerankJob?.cancel()
+        rerankJob = null
+        rerankKey = null
+        rerankApplied = null
+    }
+
+    /**
+     * Handles a rerank request for [key], the composition [rerankJob] was launched for: lets a
+     * running job finish (it checks the composition before applying), shows its result again
+     * if the strip was redrawn in Rime's order since, or does nothing if it changed nothing.
+     * False if the request must be handled from scratch.
+     */
+    private fun reuseRerank(key: Pair<String, List<String>>): Boolean {
+        if(rerankJob?.isActive == true) {
+            Log.d(TAG, "Rerank skipped: already scoring this composition")
+            return true
+        }
+        val applied = rerankApplied?.takeIf { it.key == key }
+        if(applied == null) {
+            Log.d(TAG, "Rerank skipped: this composition was scored without a change")
+            return true
+        }
+        // The same conditions as when the result was applied.
+        if(editingState.active || isOnEnglishPage || !isBopomofo || sentenceCommitting) return false
+        if(!helper.context.getSetting(ChineseIMESettings.RerankSetting)) return false
+        Log.d(TAG, "Rerank skipped: this composition's result shown again")
+        if(candidateOrder === applied.order && sentenceOverride == applied.override) return true
+        candidateOrder = applied.order
+        sentenceOverride = applied.override
+        showSuggestionStrip(candidateWords(applied.words, applied.comments))
+        return true
     }
 
     /**
@@ -916,9 +972,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
      * the model clearly prefers another, shows that one first (Rime's moves to second).
      */
     private fun maybeRerankSentence(
-        scorer: CandidateScorer, candidates: List<RimeCandidate>, preedit: String,
+        scorer: CandidateScorer, candidates: List<RimeCandidate>, key: Pair<String, List<String>>,
         chosen: String, reading: List<ZhuyinSyllable>,
     ) {
+        val preedit = key.first
         // Traditional output only; unknown before the first configuration update.
         if(prevConfiguration?.simplification != false) return
         val lexicon = sentenceLexicon ?: run { ensureSentenceLexicon(); return }
@@ -928,6 +985,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         val spellings = reading.map { ZhuyinSyllables.toLunaPinyin(it.base) ?: return }
         val context = connect?.getTextBeforeCursor(RerankContextChars, 0)?.toString().orEmpty() + chosen
 
+        rerankKey = key
         rerankJob = coroScope.launch {
             val start = SystemClock.elapsedRealtime()
             val result = withContext(rerankDispatcher) {
@@ -958,10 +1016,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             val sentence = list[best]
             // Rime may offer the same sentence further down: show it only once, first.
             val rest = words.indices.filter { words[it] != sentence }
-            sentenceOverride = SentenceChoice(preedit, chosen, sentence)
-            candidateOrder = (listOf(-1) + rest).toIntArray()
-            showSuggestionStrip(candidateWords(
-                listOf(sentence) + rest.map { words[it] }, listOf(null) + rest.map { candidates[it].comment }))
+            val choice = SentenceChoice(preedit, chosen, sentence)
+            val order = (listOf(-1) + rest).toIntArray()
+            val shown = listOf(sentence) + rest.map { words[it] }
+            val comments = listOf(null) + rest.map { candidates[it].comment }
+            sentenceOverride = choice
+            candidateOrder = order
+            rerankApplied = RerankResult(key, order, choice, shown, comments)
+            showSuggestionStrip(candidateWords(shown, comments))
         }
     }
 
@@ -1081,6 +1143,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
     override fun onStartInput() {
         endAssociation()
+        cancelRerank()
         // Order matters: extracting the dictionary wipes the shared directory, so the bundled
         // schemas are (re)copied afterwards.
         val dictionaryChanged = resetSharedFromResources(helper.context, helper.lifecycleScope)
