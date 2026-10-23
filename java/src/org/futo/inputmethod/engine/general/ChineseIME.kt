@@ -930,7 +930,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 try {
                     val list = SentenceNBest.candidates(lexicon, spellings, rimeSentence, scorer::covers)
                     if(list.size < 2) null
-                    else scorer.score(context, reading, list)?.let { list to it }
+                    else SentenceNBest.scoreInBatches(list) { scorer.score(context, reading, it) }?.let { list to it }
                 } catch(e: CancellationException) {
                     throw e
                 } catch(e: Exception) {

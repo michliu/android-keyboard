@@ -58,4 +58,26 @@ class SentenceNBestTest {
         assertNull(SentenceNBest.promoted(floatArrayOf(-5f, Float.NaN)))
         assertNull(SentenceNBest.promoted(floatArrayOf(-5f)))
     }
+
+    @Test
+    fun scoresInBatchesOfSixteen() {
+        val sentences = (0 until 33).map { "s$it" }
+        val runs = ArrayList<List<String>>()
+        val scores = SentenceNBest.scoreInBatches(sentences) { run ->
+            runs.add(run)
+            FloatArray(run.size) { -(run[it].drop(1).toFloat()) }
+        }!!
+        assertEquals(listOf(16, 16, 2), runs.map { it.size })
+        // The lone last sentence is scored together with the first.
+        assertEquals(listOf("s32", "s0"), runs[2])
+        assertEquals(sentences.indices.map { -it.toFloat() }, scores.toList())
+    }
+
+    @Test
+    fun batchFailureFailsAll() {
+        assertNull(SentenceNBest.scoreInBatches((0 until 20).map { "s$it" }) { run ->
+            if (run.size == 16) FloatArray(16) else null
+        })
+        assertNull(SentenceNBest.scoreInBatches(listOf("a", "b")) { FloatArray(1) })
+    }
 }

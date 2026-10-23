@@ -5,7 +5,10 @@ package org.futo.inputmethod.engine.general
  * a reading, scored by the words' log shares of the essay weights.
  */
 object SentenceNBest {
-    const val K = 16
+    /** Sentences scored (offline: 16 → 69.9%, 32 → 72.6% exact sentences). */
+    const val K = 32
+    /** Most candidates the model scores in one run. */
+    const val BATCH = 16
     /** Syllable counts handled as sentences; fewer are left to [ZhuyinReranker]. */
     val SYLLABLES = 4..12
 
@@ -61,5 +64,24 @@ object SentenceNBest {
         val best = scores.indices.maxByOrNull { scores[it] } ?: return null
         if (best == 0 || scores[best] - scores[0] < ZhuyinReranker.PROMOTE_MARGIN) return null
         return best
+    }
+
+    /**
+     * Scores [sentences] in runs of at most [BATCH] with [score] (each sentence's score does not
+     * depend on the others in its run); null if any run fails. A last run of one sentence is
+     * scored together with the first, since the model needs at least two.
+     */
+    fun scoreInBatches(sentences: List<String>, score: (List<String>) -> FloatArray?): FloatArray? {
+        val out = FloatArray(sentences.size)
+        var start = 0
+        while (start < sentences.size) {
+            val run = sentences.subList(start, minOf(start + BATCH, sentences.size))
+            val scored = if (run.size == 1) listOf(run[0], sentences[0]) else run
+            val scores = score(scored) ?: return null
+            if (scores.size != scored.size) return null
+            for (i in run.indices) out[start + i] = scores[i]
+            start += run.size
+        }
+        return out
     }
 }
