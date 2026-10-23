@@ -76,4 +76,17 @@ class ChineseCharReadingsTest {
             dir.deleteRecursively()
         }
     }
+
+    @Test
+    fun duplicateSpellingCountsOnce() {
+        val r = parse("...\n的\tde\n的\tde\n")
+        assertEquals(1, r.size)
+        assertTrue(r.has("的", "de"))
+        assertFalse(r.has("的", "di"))
+    }
+
+    @Test
+    fun multiCharacterQueryHasNoReading() {
+        assertFalse(parse("...\n的\tde\n").has("的的", "de"))
+    }
 }
