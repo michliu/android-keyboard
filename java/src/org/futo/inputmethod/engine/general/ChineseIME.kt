@@ -6,6 +6,7 @@ import android.util.Log
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.ExtractedTextRequest
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,6 +26,7 @@ import icu.astronot233.rime.X11Keys.XK_Linefeed
 import icu.astronot233.rime.X11Keys.XK_Return
 import icu.astronot233.rime.X11Keys.XK_Tab
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -313,6 +315,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private var associationGeneration = 0
     /** Scores the associations of the latest commit before they are shown. */
     private var associationRankJob: Job? = null
+    /**
+     * The ranking the strip waits for: its generation and the text it continues; null when none.
+     * Not [associationRankJob]'s state, since a native run past its timeout keeps that job going.
+     */
+    private var associationPending: Pair<Int, String>? = null
 
     /** Context reranker (依前文排序); null until loaded, or after it failed to load. */
     private var scorer: CandidateScorer? = null
@@ -399,6 +406,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
         /** A rerank slower than this is dropped: the strip would change after the user moved on. */
         private const val RerankTimeoutMs = 300L
+        /** Associations wait at most this long in all, queueing on the dispatcher included. */
+        private const val AssociationMaxWaitMs = 600L
         private const val RerankContextChars = 64
         private const val SentenceRerankTimeoutMs = 500L
         /** Rime selections tried for one sentence before committing the rest directly. */
@@ -663,12 +672,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             }
         }
 
-        // Rime clears its candidates after a commit; keep the associations shown for that commit.
-        if(cdd.isEmpty() && associationContext != null) return@onEach
+        // Rime clears its candidates after a commit; keep the associations shown for that commit,
+        // or what the strip shows while they are ranked (no empty strip in between).
+        if(cdd.isEmpty() && (associationContext != null || associationPending?.first == associationGeneration)) return@onEach
 
         if(cdd.isNotEmpty()) {
             associationContext = null
             associationWords = emptyList()
+            associationPending = null
         }
 
         // Don't flicker an empty suggest bar when editing
@@ -768,13 +779,20 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             return
         }
 
-        // Nothing is shown until the model has ranked them (no reordering in view): end what is
-        // shown now, which also bumps the generation, then take the new one for this ranking.
+        // Nothing is shown until the model has ranked them (no reordering in view): end the
+        // associations shown now, which also bumps the generation, then take the new one for
+        // this ranking. A strip kept for an earlier ranking stays until this one is done.
+        associationPending = null
         endAssociation()
+        // Text selected right after the commit: a tapped association would replace it.
+        val cursor = collapsedCursor() ?: run { setNeutralSuggestionStrip(); return }
         val generation = ++associationGeneration
+        associationPending = generation to committed
         associationRankJob = coroScope.launch {
             val start = SystemClock.elapsedRealtime()
+            val started = CompletableDeferred<Long>()
             val scoring = async(rerankDispatcher) {
+                started.complete(SystemClock.elapsedRealtime())
                 try {
                     scorer.scoreNext(rankContext, firsts)
                 } catch(e: CancellationException) {
@@ -787,13 +805,27 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     null
                 }
             }
-            val scores = withTimeoutOrNull(RerankTimeoutMs) { scoring.await() }
+            // The model's time counts from when it starts, not while queued behind another run;
+            // the strip never waits longer than AssociationMaxWaitMs in all.
+            val scores = withTimeoutOrNull(AssociationMaxWaitMs) {
+                val begun = started.await()
+                withTimeoutOrNull(begun + RerankTimeoutMs - SystemClock.elapsedRealtime()) { scoring.await() }
+            }
             if(scores == null) scoring.cancel()
             if(generation != associationGeneration) return@launch
-            // Typed on, moved away, or the text before the cursor changed while the model ran.
-            if(rawInput.text.isNotEmpty() || rime.preeditFlow.value.isNotEmpty()) return@launch
-            if(!isBopomofo || isOnEnglishPage || editingState.active) return@launch
-            if(connect?.getTextBeforeCursor(committed.length, 0)?.toString() != committed) return@launch
+            // Typed on, moved away, selected text, or the text before the cursor changed while the
+            // model ran. Ending also restores the strip if nothing else replaced it meanwhile.
+            if(rawInput.text.isNotEmpty() || rime.preeditFlow.value.isNotEmpty() ||
+                !isBopomofo || isOnEnglishPage || editingState.active ||
+                connect?.getTextBeforeCursor(committed.length, 0)?.toString() != committed) {
+                endAssociation()
+                return@launch
+            }
+            val now = collapsedCursor()
+            if(now == null || (cursor >= 0 && now >= 0 && now != cursor)) {
+                endAssociation()
+                return@launch
+            }
             val shown = if(scores == null || scores.size != firsts.size) {
                 Log.w(TAG, "Associations shown unranked after ${SystemClock.elapsedRealtime() - start} ms")
                 words
@@ -809,10 +841,26 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     private fun applyAssociations(context: String, words: List<String>, committed: String) {
+        associationPending = null
         associationContext = context
         associationWords = words
         associationCommitted = committed
         showSuggestionStrip(candidateWords(words))
+    }
+
+    /**
+     * The cursor's offset in the field, -1 if the field does not say, or null if text is selected.
+     * Asked of the field itself: [onUpdateSelection] arrives late (debounced, and after our own
+     * commits), so its last values may predate the text just committed.
+     */
+    private fun collapsedCursor(): Int? {
+        val ic = connect ?: return -1
+        val extracted = ic.getExtractedText(ExtractedTextRequest().apply { hintMaxChars = 1 }, 0)
+        if(extracted != null && extracted.selectionStart >= 0 && extracted.selectionEnd >= 0) {
+            if(extracted.selectionStart != extracted.selectionEnd) return null
+            return extracted.startOffset + extracted.selectionStart
+        }
+        return if(ic.getSelectedText(0).isNullOrEmpty()) -1 else null
     }
 
     /** False in fields whose text must not reach the context model (passwords, incognito). */
@@ -969,8 +1017,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
         rerankKey = key
         rerankJob = coroScope.launch {
-            val start = SystemClock.elapsedRealtime()
+            // Timed from when the model starts, not while queued behind another run.
+            var start = 0L
             val scores = withContext(rerankDispatcher) {
+                start = SystemClock.elapsedRealtime()
                 try {
                     scorer.score(context, reading, scorable.map { words[it] })
                 } catch(e: CancellationException) {
@@ -1055,8 +1105,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
         rerankKey = key
         rerankJob = coroScope.launch {
-            val start = SystemClock.elapsedRealtime()
+            // Timed from when the work starts, not while queued behind another run.
+            var start = 0L
             val result = withContext(rerankDispatcher) {
+                start = SystemClock.elapsedRealtime()
                 try {
                     val list = SentenceNBest.candidates(lexicon, spellings, rimeSentence, scorer::covers)
                     if(list.size < 2) null
@@ -1152,7 +1204,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         associationGeneration++
         associationRankJob?.cancel()
         associationRankJob = null
-        if(associationContext == null) return
+        // The strip still shows what it had before the ranking (see the candidates collector).
+        val waited = associationPending != null
+        associationPending = null
+        if(associationContext == null) {
+            if(waited) setNeutralSuggestionStrip()
+            return
+        }
         associationContext = null
         associationWords = emptyList()
         associationCommitted = ""
@@ -1160,12 +1218,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int, composingSpanStart: Int, composingSpanEnd: Int) {
-        if(associationContext == null) return
+        // Shown associations, or ones being ranked for the latest commit.
+        val committed = if(associationContext != null) associationCommitted
+            else associationPending?.takeIf { it.first == associationGeneration }?.second ?: return
         // The user moved the cursor, selected text, or the app changed the text (e.g. cleared the
-        // field after sending): the shown associations no longer follow the text at the cursor.
+        // field after sending): the associations no longer follow the text at the cursor.
         // Our own commits pass this check, since they leave the committed text before the cursor.
         if(newSelStart != newSelEnd ||
-            connect?.getTextBeforeCursor(associationCommitted.length, 0)?.toString() != associationCommitted) {
+            connect?.getTextBeforeCursor(committed.length, 0)?.toString() != committed) {
             endAssociation()
         }
     }
