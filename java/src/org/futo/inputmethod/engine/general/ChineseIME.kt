@@ -295,6 +295,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private var scorer: CandidateScorer? = null
     private var scorerJob: Job? = null
     private var scorerFailed = false
+
+    /** Single-character readings for the reranker; null until loaded, or without luna_pinyin.dict.yaml. */
+    private var charReadings: ChineseCharReadings? = null
+    private var charReadingsJob: Job? = null
     private val rerankDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     private var rerankJob: Job? = null
     /** Display position → Rime index of the candidates shown; null while they are in Rime's order. */
@@ -617,6 +621,32 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         }
     }
 
+    /** Loads the single-character readings the reranker filters one-syllable candidates with. */
+    private fun ensureCharReadingsLoaded(reload: Boolean = false) {
+        if(reload) {
+            charReadingsJob?.cancel()
+            charReadingsJob = null
+            charReadings = null
+        }
+        if(!isBopomofo || charReadingsJob != null) return
+        charReadingsJob = coroScope.launch {
+            charReadings = withContext(Dispatchers.IO) {
+                try {
+                    ChineseCharReadings.load(getShared(helper.context))
+                } catch(e: CancellationException) {
+                    throw e
+                } catch(e: Exception) {
+                    Log.e(TAG, "Failed to load character readings", e)
+                    null
+                } catch(e: OutOfMemoryError) {
+                    Log.e(TAG, "Out of memory loading character readings", e)
+                    null
+                }
+            }
+            Log.i(TAG, "Character readings: ${charReadings?.size ?: 0} characters")
+        }
+    }
+
     /**
      * Shows the phrases that follow [context] in the suggestion strip, or ends the association if
      * there are none. [committed] is the text that was just committed (the end of [context]).
@@ -707,7 +737,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         val reading = ZhuyinReading.parse(preedit) ?: return
         if(reading.size > ZhuyinReranker.MAX_SYLLABLES) return
         val words = candidates.map { it.text }
-        val scorable = ZhuyinReranker.scorable(words, reading.size, scorer::covers)
+        // For one syllable the model reads only the context, and Rime also offers characters
+        // with other readings (e.g. 不 and 到 for ㄉㄜ˙): score only characters with the typed reading.
+        val spelling = if(reading.size == 1) ZhuyinSyllables.toLunaPinyin(reading[0].base) else null
+        val readings = charReadings
+        val covers: (String) -> Boolean =
+            if(spelling != null && readings != null) { word -> scorer.covers(word) && readings.has(word, spelling) }
+            else scorer::covers
+        val scorable = ZhuyinReranker.scorable(words, reading.size, covers)
         if(scorable.size < 2) return
         val context = connect?.getTextBeforeCursor(RerankContextChars, 0)?.toString().orEmpty()
         if(reading.size == 1 && context.isEmpty()) return
@@ -819,6 +856,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         }
         updateConfig()
         ensureAssociationLoaded(reload = dictionaryChanged)
+        ensureCharReadingsLoaded(reload = dictionaryChanged)
         ensureScorerLoaded()
     }
 
@@ -1041,6 +1079,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         endAssociation()
         layoutHint = layout.mainLayout.imeHint
         ensureAssociationLoaded()
+        ensureCharReadingsLoaded()
         ensureScorerLoaded()
         if(helper.isImeActive(this)) updateConfig()
     }
