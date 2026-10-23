@@ -481,6 +481,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
         helper.updateUiInputState(ped.isEmpty() && notEditing)
         helper.setPreedit(FloatingPreEdit.build(ped, this, currentTransformation, rawInput.text))
+
+        // Typing tone 1 (space) marks the syllable but can leave Rime's candidates unchanged, and
+        // the candidates flow does not emit an equal list again: score them for this preedit here.
+        if(ped.isNotEmpty() && notEditing) {
+            val candidates = rime.candidatesFlow.value
+            if(candidates.isNotEmpty()) maybeRerank(candidates)
+        }
     }.launchIn(coroScope)
 
     override fun onStartEdit() {
