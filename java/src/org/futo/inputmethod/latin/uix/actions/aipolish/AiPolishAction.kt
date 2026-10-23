@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,11 +22,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -35,6 +40,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -50,6 +56,8 @@ import org.futo.inputmethod.latin.uix.LocalKeyboardScheme
 import org.futo.inputmethod.latin.uix.getSetting
 import org.futo.inputmethod.latin.uix.theme.Typography
 
+private const val TAG = "AiPolish"
+
 private sealed class PolishState {
     object Idle : PolishState()
     object Loading : PolishState()
@@ -59,9 +67,19 @@ private sealed class PolishState {
 
 private enum class EditorSlot { Prompt, Text, None }
 
+private enum class Detection { Off, Running, Failed, Done }
+
+private val SCENE_LABELS = listOf(
+    Scene.Chat to R.string.action_ai_polish_style_chat,
+    Scene.Email to R.string.action_ai_polish_style_email,
+    Scene.Formal to R.string.action_ai_polish_style_formal,
+    Scene.Social to R.string.action_ai_polish_style_social,
+)
+
 private class AiPolishWindow(
     private val manager: KeyboardManagerForAction,
     private val client: AiPolishClient,
+    private val clef: ClefClient,
 ) : ActionWindow() {
     private val context: Context = manager.getContext()
 
@@ -85,6 +103,51 @@ private class AiPolishWindow(
     private var job: Job? = null
 
     private var pendingSlot: EditorSlot? = null
+
+    val style: MutableState<StyleChoice> = mutableStateOf(StyleChoice.None)
+    val detection: MutableState<Detection> = mutableStateOf(Detection.Off)
+
+    /** Whether Clef judged the tone harsh; the warning shows only while soften is still on. */
+    val detectedHarsh: MutableState<Boolean> = mutableStateOf(false)
+
+    /** Once the user picks a style by hand, a late Clef answer must not overwrite it. */
+    private val styleTouched: MutableState<Boolean> = mutableStateOf(false)
+
+    private var detectJob: Job? = null
+
+    init {
+        detectStyle()
+    }
+
+    private fun detectStyle() {
+        val config = AiPolishSettings.clefConfig(context)
+        if (!config.isConfigured || text.value.isBlank()) return
+        detection.value = Detection.Running
+        detectJob = manager.getLifecycleScope().launch {
+            clef.classify(config, text.value).fold(
+                onSuccess = { result ->
+                    val choice = StyleChoice.from(result)
+                    detectedHarsh.value = choice.soften
+                    if (!styleTouched.value) style.value = choice
+                    detection.value = Detection.Done
+                },
+                onFailure = {
+                    android.util.Log.w(TAG, "Style detection failed: ${it.message}")
+                    detection.value = Detection.Failed
+                },
+            )
+        }
+    }
+
+    private fun pickScene(scene: Scene) {
+        styleTouched.value = true
+        style.value = style.value.copy(scene = if (style.value.scene == scene) null else scene)
+    }
+
+    private fun toggleSoften() {
+        styleTouched.value = true
+        style.value = style.value.copy(soften = !style.value.soften)
+    }
 
     /** Unmount the current editor; the target is mounted from afterUnOverride, i.e. only after
      *  the old editor has released the input connection override. */
@@ -114,7 +177,11 @@ private class AiPolishWindow(
         job?.cancel()
         state.value = PolishState.Loading
         job = manager.getLifecycleScope().launch {
-            val result = client.polish(AiPolishSettings.config(context), prompt.value, text.value)
+            val result = client.polish(
+                AiPolishSettings.config(context),
+                composePrompt(prompt.value, style.value),
+                text.value,
+            )
             state.value = result.fold(
                 onSuccess = { PolishState.Success(it) },
                 onFailure = { PolishState.Error(it.message ?: it.toString()) },
@@ -155,6 +222,7 @@ private class AiPolishWindow(
 
     override fun close(): CloseResult {
         job?.cancel()
+        detectJob?.cancel()
         return CloseResult.Default
     }
 
@@ -186,6 +254,63 @@ private class AiPolishWindow(
     }
 
     @Composable
+    private fun StyleRow() {
+        val scheme = LocalKeyboardScheme.current
+        val chipColors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = scheme.primary,
+            selectedLabelColor = scheme.onPrimary,
+            selectedLeadingIconColor = scheme.onPrimary,
+            labelColor = scheme.onSurface,
+        )
+        val checkIcon: @Composable () -> Unit = {
+            Icon(
+                painterResource(R.drawable.check),
+                contentDescription = null,
+                modifier = Modifier.size(FilterChipDefaults.IconSize)
+            )
+        }
+        Label(R.string.action_ai_polish_style_label)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            SCENE_LABELS.forEach { (scene, label) ->
+                FilterChip(
+                    selected = style.value.scene == scene,
+                    onClick = { pickScene(scene) },
+                    label = { Text(stringResource(label)) },
+                    leadingIcon = if (style.value.scene == scene) checkIcon else null,
+                    colors = chipColors,
+                )
+            }
+            FilterChip(
+                selected = style.value.soften,
+                onClick = { toggleSoften() },
+                label = { Text(stringResource(R.string.action_ai_polish_style_soften)) },
+                leadingIcon = if (style.value.soften) checkIcon else null,
+                colors = chipColors,
+            )
+        }
+        val status = when {
+            detection.value == Detection.Running && !styleTouched.value -> R.string.action_ai_polish_style_detecting
+            detection.value == Detection.Failed -> R.string.action_ai_polish_style_failed
+            detection.value == Detection.Done && detectedHarsh.value && style.value.soften ->
+                R.string.action_ai_polish_style_harsh
+            else -> null
+        }
+        status?.let {
+            Text(
+                stringResource(it),
+                style = Typography.Small,
+                color = LocalKeyboardScheme.current.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp)
+            )
+        }
+    }
+
+    @Composable
     override fun WindowContents(keyboardShown: Boolean) {
         val scheme = LocalKeyboardScheme.current
         Column(
@@ -194,6 +319,7 @@ private class AiPolishWindow(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 8.dp)
         ) {
+            StyleRow()
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Label(R.string.action_ai_polish_prompt_label)
                 Spacer(Modifier.weight(1f))
@@ -318,6 +444,12 @@ val AiPolishAction = Action(
     name = R.string.action_ai_polish_title,
     canShowKeyboard = true,
     simplePressImpl = null,
-    windowImpl = { manager, _ -> AiPolishWindow(manager, AiPolishClient(HttpUrlPolishTransport())) },
+    windowImpl = { manager, _ ->
+        AiPolishWindow(
+            manager,
+            AiPolishClient(HttpUrlPolishTransport()),
+            ClefClient(HttpUrlPolishTransport(ClefClient.TIMEOUT_MS)),
+        )
+    },
     settingsMenu = AiPolishSettings.menu,
 )

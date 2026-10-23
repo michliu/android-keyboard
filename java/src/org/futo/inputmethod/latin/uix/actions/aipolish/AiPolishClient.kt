@@ -88,13 +88,13 @@ class AiPolishClient(private val transport: PolishTransport) {
 }
 
 /** Real transport backed by HttpURLConnection. */
-class HttpUrlPolishTransport : PolishTransport {
+class HttpUrlPolishTransport(private val timeoutMs: Int = 60_000) : PolishTransport {
     override fun post(url: String, headers: Map<String, String>, body: String): TransportResponse {
         val connection = URL(url).openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "POST"
-            connection.connectTimeout = 60_000
-            connection.readTimeout = 60_000
+            connection.connectTimeout = timeoutMs
+            connection.readTimeout = timeoutMs
             connection.doOutput = true
             headers.forEach { (k, v) -> connection.setRequestProperty(k, v) }
             connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }

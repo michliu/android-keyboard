@@ -19,10 +19,18 @@ object AiPolishSettings {
     val Model = SettingsKey(stringPreferencesKey("ai_polish_model"), "gpt-4o-mini")
     val Prompt = SettingsKey(stringPreferencesKey("ai_polish_prompt"), DEFAULT_PROMPT)
 
+    val ClefAccountId = SettingsKey(stringPreferencesKey("ai_polish_clef_account_id"), "")
+    val ClefApiToken = SettingsKey(stringPreferencesKey("ai_polish_clef_api_token"), "")
+
     fun config(context: Context) = PolishConfig(
         baseUrl = context.getSetting(BaseUrl),
         apiKey = context.getSetting(ApiKey),
         model = context.getSetting(Model),
+    )
+
+    fun clefConfig(context: Context) = ClefConfig(
+        accountId = context.getSetting(ClefAccountId),
+        apiToken = context.getSetting(ClefApiToken),
     )
 
     /** [placeholder] is a string resource; the key's default is used when it is null. */
@@ -47,6 +55,8 @@ object AiPolishSettings {
             ),
             textSetting(R.string.action_ai_polish_setting_model, Model),
             textSetting(R.string.action_ai_polish_setting_prompt, Prompt),
+            textSetting(R.string.action_ai_polish_setting_clef_account_id, ClefAccountId),
+            textSetting(R.string.action_ai_polish_setting_clef_api_token, ClefApiToken),
         )
     )
 }
