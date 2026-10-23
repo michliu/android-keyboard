@@ -20,6 +20,11 @@ class ZhuyinRerankerTest {
     }
 
     @Test
+    fun scorableTakesUpToThirtyTwoSingleCharacters() {
+        assertEquals((0 until 32).toList(), ZhuyinReranker.scorable(List(40) { "甲" }, 1, all))
+    }
+
+    @Test
     fun scorableSkipsUncoveredCandidatesButNeedsTheFirst() {
         val covers: (String) -> Boolean = { !it.contains("𠀀") }
         assertEquals(listOf(0, 2), ZhuyinReranker.scorable(listOf("證件", "政𠀀", "政見"), 2, covers))
