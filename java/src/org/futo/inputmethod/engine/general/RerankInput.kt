@@ -30,14 +30,15 @@ object RerankInput {
     /**
      * Inputs to score [candidates] after [context] for [reading], or null if the model cannot
      * score them: no syllables or candidates, a candidate whose length differs from the syllable
-     * count, an unknown candidate character or Zhuyin base, or one syllable without context
-     * (a single syllable is scored from the context alone).
+     * count, an unknown candidate character or Zhuyin base, or one syllable without context.
+     * A single syllable, or a reading with an untyped tone (tone 0), is scored from the text
+     * alone: offline, giving the model a guessed tone did worse than Rime, the text alone better.
      */
     fun build(vocab: RerankVocab, context: String, reading: List<ZhuyinSyllable>, candidates: List<String>): RerankTensors? {
         val n = reading.size
         if (n == 0 || candidates.isEmpty()) return null
-        val textOnly = n == 1
-        if (textOnly && context.isEmpty()) return null
+        val textOnly = n == 1 || reading.any { it.tone == 0 }
+        if (n == 1 && context.isEmpty()) return null
 
         val encoded = candidates.map { word ->
             val chars = RerankVocab.codePoints(word)

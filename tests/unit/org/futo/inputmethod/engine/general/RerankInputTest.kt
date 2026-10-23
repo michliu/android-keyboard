@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNotNull
 import org.junit.Test
 import java.io.File
 
@@ -110,5 +111,22 @@ class RerankInputTest {
         // No candidates, or no syllables.
         assertNull(RerankInput.build(vocab, "我", syl("ㄓㄥˋ ㄐㄧㄢˋ"), emptyList()))
         assertNull(RerankInput.build(vocab, "我", emptyList(), listOf("再")))
+    }
+
+    @Test
+    fun aMissingToneScoresFromTheTextOnly() {
+        val toned = RerankInput.build(vocab, "我", syl("ㄓㄥˋ ㄐㄧㄢˋ"), listOf("證件", "政見"))!!
+        val t = RerankInput.build(vocab, "我", syl("ㄓㄥ ㄐㄧㄢˋ"), listOf("證件", "政見"))!!
+        // No reading tokens: the typed tone is not used either.
+        assertTrue(t.types.none { it == 1L })
+        assertTrue(t.bases.all { it == 0L } && t.tones.all { it == 0L })
+        assertEquals(toned.ids.size - 2, t.ids.size)
+        assertEquals(rows(toned.targetIds), rows(t.targetIds))
+    }
+
+    @Test
+    fun textOnlyNeedsContextOnlyForOneSyllable() {
+        assertNotNull(RerankInput.build(vocab, "", syl("ㄓㄥ ㄐㄧㄢ"), listOf("證件", "政見")))
+        assertNull(RerankInput.build(vocab, "", syl("ㄗㄞ"), listOf("再", "在")))
     }
 }
