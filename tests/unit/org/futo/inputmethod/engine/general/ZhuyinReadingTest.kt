@@ -14,9 +14,15 @@ class ZhuyinReadingTest {
     }
 
     @Test
-    fun rejectsASyllableWithoutAToneMark() {
-        assertNull(ZhuyinReading.parse("ㄍㄨㄥ ㄩㄢˊ"))
-        assertNull(ZhuyinReading.parse("ㄍㄨㄥˉ ㄩㄢ"))
+    fun readsAMissingToneAsZero() {
+        assertEquals(
+            listOf(ZhuyinSyllable("ㄍㄨㄥ", 0), ZhuyinSyllable("ㄩㄢ", 2)),
+            ZhuyinReading.parse("ㄍㄨㄥ ㄩㄢˊ")
+        )
+        assertEquals(
+            listOf(ZhuyinSyllable("ㄍㄨㄥ", 1), ZhuyinSyllable("ㄩㄢ", 0)),
+            ZhuyinReading.parse("ㄍㄨㄥˉ ㄩㄢ")
+        )
     }
 
     @Test
@@ -60,9 +66,13 @@ class ZhuyinReadingTest {
     }
 
     @Test
-    fun splitSelectedNeedsTonedSyllables() {
+    fun splitSelectedKeepsSyllablesWithoutTones() {
+        assertEquals("請到" to listOf(ZhuyinSyllable("ㄉㄥ", 0)), ZhuyinReading.splitSelected("請到ㄉㄥ"))
+    }
+
+    @Test
+    fun splitSelectedNeedsSyllables() {
         assertEquals(null, ZhuyinReading.splitSelected("請到"))
-        assertEquals(null, ZhuyinReading.splitSelected("請到ㄉㄥ"))
         assertEquals(null, ZhuyinReading.splitSelected(""))
     }
 }
