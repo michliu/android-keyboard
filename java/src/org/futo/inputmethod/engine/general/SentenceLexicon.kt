@@ -332,11 +332,13 @@ class SentenceLexicon private constructor(
             val records = Records()
             records.total = total.coerceAtLeast(1)
             val seen = ArrayList<Long>(4)
-            fun addWord(word: String, codes: List<String>) {
-                val length = word.codePointCount(0, word.length)
-                if (length !in 1..MAX_WORD) return
+            /** The weight [word] is kept with, or null if it is too long or (as a phrase) too rare. */
+            fun weightOf(word: String, length: Int): Double? {
+                if (length !in 1..MAX_WORD) return null
                 val weight = (essayWeights[word] ?: 0L) + 0.5
-                if (length >= 2 && weight < MIN_WORD_WEIGHT) return
+                return if (length >= 2 && weight < MIN_WORD_WEIGHT) null else weight
+            }
+            fun addWord(word: String, length: Int, weight: Double, codes: List<String>) {
                 val taiwan = TaiwanVariants.toTaiwan(word)
                 seen.clear()
                 for (code in codes) {
@@ -347,8 +349,18 @@ class SentenceLexicon private constructor(
                     records.add(key, taiwan, weight)
                 }
             }
-            for (word in essayWeights.keys) addWord(word, explicit[word] ?: combinations(word, charReadings))
-            for ((word, codes) in explicit) if (word !in essayWeights) addWord(word, codes)
+            // Filter first: readings are only combined for the words kept.
+            for (word in essayWeights.keys) {
+                val length = word.codePointCount(0, word.length)
+                val weight = weightOf(word, length) ?: continue
+                addWord(word, length, weight, explicit[word] ?: combinations(word, charReadings))
+            }
+            for ((word, codes) in explicit) {
+                if (word in essayWeights) continue
+                val length = word.codePointCount(0, word.length)
+                val weight = weightOf(word, length) ?: continue
+                addWord(word, length, weight, codes)
+            }
 
             val maxWeight = records.maxWeight
             val personalSeen = HashSet<Pair<Long, String>>()

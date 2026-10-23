@@ -341,6 +341,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
      */
     private var sentenceOverride: SentenceChoice? = null
     private var sentenceCommitting = false
+    /** Commits Rime made (RimeMessage.Commit); tells [commitSentence] that a selection committed. */
+    private var rimeCommits = 0
 
     override fun getLoadingState(): MutableState<Boolean>? = rimeLoading
 
@@ -383,6 +385,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         private const val SentenceRerankTimeoutMs = 500L
         /** Rime selections tried for one sentence before committing the rest directly. */
         private const val MaxSentenceSteps = 12
+        /** [ensureSentenceLexicon]'s result when the dictionary has no sources for it. */
+        private val NoSentenceDictionary = "" to null
 
         @JvmStatic
         fun getRimeDir(context: Context) = context.getExternalFilesDir("rime")
@@ -504,6 +508,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             else -> {}
         }
         is RimeMessage.Commit -> {
+            rimeCommits++
             connect?.commitText(msg.value, 1)
             showAssociations(msg.value, msg.value)
         }
@@ -522,6 +527,19 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
         helper.updateUiInputState(ped.isEmpty() && notEditing)
         helper.setPreedit(FloatingPreEdit.build(ped, this, currentTransformation, rawInput.text))
+
+        // The model's sentence was for another composition (e.g. a tone typed without changing
+        // the candidates): show Rime's order again, as for new candidates.
+        if(sentenceOverride.let { it != null && it.preedit != ped }) {
+            candidateOrder = null
+            sentenceOverride = null
+            rerankJob?.cancel()
+            val candidates = rime.candidatesFlow.value
+            // Empty: a commit, whose associations stay; the candidates collector handles the rest.
+            if(ped.isNotEmpty() && notEditing && candidates.isNotEmpty()) {
+                showSuggestionStrip(candidateWords(candidates.map { it.text }, candidates.map { it.comment }))
+            }
+        }
 
         // Typing tone 1 (space) marks the syllable but can leave Rime's candidates unchanged, and
         // the candidates flow does not emit an equal list again: score them for this preedit here.
@@ -778,6 +796,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             val start = SystemClock.elapsedRealtime()
             val result = withContext(Dispatchers.IO) {
                 try {
+                    // No dictionary (yet): not a failure, a later one is picked up on its arrival.
+                    if(!File(shared, SentenceLexicon.DICT_FILE).exists() || !File(shared, SentenceLexicon.ESSAY_FILE).exists()) {
+                        return@withContext NoSentenceDictionary
+                    }
                     val tag = SentenceLexicon.tag(shared, personal)
                     if(tag == loadedTag) null else tag to SentenceLexicon.loadOrBuild(cache, shared, personal)
                 } catch(e: CancellationException) {
@@ -791,6 +813,12 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 }
             }
             sentenceLexiconJob = null
+            if(result === NoSentenceDictionary) {
+                sentenceLexicon = null
+                sentenceLexiconTag = null
+                Log.i(TAG, "Sentence lexicon: no dictionary")
+                return@launch
+            }
             val (tag, loaded) = result ?: return@launch
             if(loaded != null) {
                 sentenceLexicon = loaded
@@ -887,7 +915,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         scorer: CandidateScorer, candidates: List<RimeCandidate>, preedit: String,
         chosen: String, reading: List<ZhuyinSyllable>,
     ) {
-        if(prevConfiguration?.simplification == true) return
+        // Traditional output only; unknown before the first configuration update.
+        if(prevConfiguration?.simplification != false) return
         val lexicon = sentenceLexicon ?: run { ensureSentenceLexicon(); return }
         val words = candidates.map { it.text }
         val rimeSentence = words.first()
@@ -937,15 +966,16 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
      * Rime learns them; if Rime offers no word that leads there, clears the composition and
      * commits the text directly. Keys typed meanwhile are never dropped: if the composition is
      * no longer the one the sentence was shown for, space's usual choice (Rime's first) is made
-     * instead, and if it changes during the selections the rest is left to the user.
+     * instead if [firstIfStale] (otherwise nothing), and if it changes during the selections the
+     * rest is left to the user.
      */
-    private suspend fun commitSentence(choice: SentenceChoice) {
+    private suspend fun commitSentence(choice: SentenceChoice, firstIfStale: Boolean) {
         val (shownFor, chosen, target) = choice
         sentenceCommitting = true
         try {
             var preedit = rime.getPreedit()
             if(preedit != shownFor) {
-                if(!rime.selectCandidate(0)) rime.commitComposition()
+                if(firstIfStale && !rime.selectCandidate(0)) rime.commitComposition()
                 return
             }
             var done = ""
@@ -955,9 +985,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 val index = SentenceSelector.next(candidates, remaining)
                 if(index < 0) break
                 val word = candidates[index]
+                val commits = rimeCommits
                 if(!rime.selectCandidate(index)) break
+                // Rime committed the composition (RimeMessage.Commit, handled before this resumes:
+                // both run on the main thread in that order), which commits the text. Its preedit
+                // may already hold a key typed since, so the commit count tells, not the preedit.
+                if(rimeCommits != commits) return
                 preedit = rime.getPreedit()
-                // Rime committed the composition (RimeMessage.Commit), which commits the text.
                 if(preedit.isEmpty()) return
                 done += word
                 // The whole sentence is selected but Rime did not commit, or it went elsewhere.
@@ -965,7 +999,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             }
             // Only replace the composition the loop saw: a key typed meanwhile changes Rime's
             // preedit, or is still on its way to Rime but already in rawInput (cleared by the
-            // caller; both happen on the main thread with no suspension in between).
+            // caller; both happen on the main thread with no suspension in between). The preedit
+            // must also still be the words selected so far followed by the rest of the reading.
+            if(!preedit.startsWith(chosen + done)) return
             if(rime.getPreedit() != preedit || rawInput.text.isNotEmpty()) return
             rime.clearComposition()
             connect?.commitText(chosen + target, 1)
@@ -1054,6 +1090,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         updateConfig()
         ensureAssociationLoaded(reload = dictionaryChanged)
         ensureCharReadingsLoaded(reload = dictionaryChanged)
+        if(dictionaryChanged) {
+            // A new dictionary may bring the sources a failed or missing lexicon lacked.
+            sentenceLexiconJob?.cancel()
+            sentenceLexiconJob = null
+            sentenceLexiconFailed = false
+            sentenceLexiconTag = null
+            sentenceLexicon = null
+        }
         ensureScorerLoaded()
     }
 
@@ -1444,7 +1488,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                         // pinyin layout does.
                         rawInput.clear()
                         if(sentence != null) {
-                            commitSentence(sentence)
+                            commitSentence(sentence, firstIfStale = true)
                         } else {
                             // The candidates may have changed since the key was pressed.
                             val index = if(rime.candidatesFlow.value.getOrNull(first)?.text == firstText) first else 0
@@ -1525,9 +1569,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     if(sentenceCommitting) return
                     val sentence = sentenceOverride
                     if(sentence != null && rimeIndexOf(suggestion.mCandidateIndex) < 0 && suggestion.word == sentence.sentence) {
+                        // Shown for another composition: the tap was meant for that one.
+                        if(rime.preeditFlow.value != sentence.preedit) return
                         rawInput.clear()
                         sentenceCommitting = true
-                        coroScope.launch { commitSentence(sentence) }
+                        coroScope.launch { commitSentence(sentence, firstIfStale = false) }
                         return
                     }
                     var index = rimeIndexOf(suggestion.mCandidateIndex)
