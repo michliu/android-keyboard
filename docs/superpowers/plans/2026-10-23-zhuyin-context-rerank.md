@@ -1137,3 +1137,220 @@ Expected：`Candidate reranker: loaded in N ms`，N 約 200–1000。記下 APK 
   - 關閉「Context-aware candidates」後重打「候選人發表」＋ ㄓㄥˋ ㄐㄧㄢˋ，第一位應恢復為證件。量完把設定打開回來。
 
 - [ ] **Step 4: 記錄結果**：把結果與數字寫進 `.superpowers/sdd/progress.md`（不 commit），並在最終回報中列出。
+
+---
+
+### Task 6: 單音節只評同讀音的字（2026-10-23 離線評估後追加）
+
+離線評估（Common Voice zh-TW 19,144 句、86,626 個情境、小麥注音台灣讀音）顯示：單音節時 Rime 候選混有讀音不同的字（打 ㄉㄜ˙ 會出現「不」「到」），只看前文的模式會把它們排到第一（的→不、的→到）。只讓讀音相同（不含聲調）的字參加評分，單音節正確率 75.9% → 77.9%，改錯 1,155 → 530，整體 87.1% → 87.9%。
+
+**Files:**
+- Create: `java/src/org/futo/inputmethod/engine/general/ChineseCharReadings.kt`
+- Test: `tests/unit/org/futo/inputmethod/engine/general/ChineseCharReadingsTest.kt`
+- Modify: `java/src/org/futo/inputmethod/engine/general/ChineseIME.kt`
+- Modify: `docs/superpowers/specs/2026-10-23-zhuyin-context-rerank-design.md`（「## 排序規則」加一條）
+
+**Interfaces:**
+- Consumes: `ZhuyinSyllables.toLunaPinyin(zhuyin: String): String?`（既有，把注音拼成 luna_pinyin 拼法，不含聲調，例如 "ㄉㄜ" → "de"）；`ZhuyinReading.parse`、`ZhuyinReranker.scorable`、`CandidateScorer.covers`。
+- Produces: `class ChineseCharReadings { val size: Int; fun has(ch: String, spelling: String): Boolean; companion object { const val FILE = "luna_pinyin.dict.yaml"; fun load(sharedDir: File): ChineseCharReadings?; fun parse(reader: Reader): ChineseCharReadings } }`
+
+`luna_pinyin.dict.yaml` 的格式：YAML 標頭以單獨一行 `...` 結束；之後每行 `字詞<TAB>拼音[<TAB>權重]`，拼音不含聲調，多字詞的拼音以空白分隔。只取單一 code point 的行；同一字可有多行（例如 `的	de	99.97%`、`的	di	0.03%`）。
+
+- [ ] **Step 1: 寫失敗測試** `tests/unit/org/futo/inputmethod/engine/general/ChineseCharReadingsTest.kt`：
+
+```kotlin
+package org.futo.inputmethod.engine.general
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.io.File
+import java.io.StringReader
+import java.nio.file.Files
+
+class ChineseCharReadingsTest {
+    private val sample = listOf(
+        "# Rime dictionary",
+        "---",
+        "name: luna_pinyin",
+        "...",
+        "",
+        "的\tde\t99.97%",
+        "的\tdi\t0.03%",
+        "不\tbu\t100%",
+        "到\tdao",
+        "# a comment",
+        "我們\two men",
+        "𠀀\tqiu",
+        "壞行",
+    ).joinToString("\n")
+
+    private fun parse(text: String = sample) = ChineseCharReadings.parse(StringReader(text))
+
+    @Test
+    fun readsEverySpellingOfACharacter() {
+        val r = parse()
+        assertTrue(r.has("的", "de"))
+        assertTrue(r.has("的", "di"))
+        assertTrue(r.has("到", "dao"))
+        assertFalse(r.has("不", "de"))
+        assertFalse(r.has("到", "de"))
+    }
+
+    @Test
+    fun skipsTheHeaderPhrasesAndMalformedLines() {
+        val r = parse()
+        assertFalse(r.has("我們", "wo men"))
+        assertFalse(r.has("name: luna_pinyin", ""))
+        assertEquals(4, r.size) // 的 不 到 𠀀
+    }
+
+    @Test
+    fun handlesSupplementaryCharacters() {
+        assertTrue(parse().has("𠀀", "qiu"))
+    }
+
+    @Test
+    fun unknownCharacterHasNoReading() {
+        assertFalse(parse().has("好", "hao"))
+    }
+
+    @Test
+    fun loadReturnsNullWithoutTheFile() {
+        val dir = Files.createTempDirectory("readings").toFile()
+        try {
+            assertNull(ChineseCharReadings.load(dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun loadReadsTheFile() {
+        val dir = Files.createTempDirectory("readings").toFile()
+        try {
+            File(dir, ChineseCharReadings.FILE).writeText(sample)
+            assertTrue(ChineseCharReadings.load(dir)!!.has("的", "de"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+}
+```
+
+- [ ] **Step 2: 確認失敗**：`./gradlew testUnstableDebugUnitTest --tests 'org.futo.inputmethod.engine.general.ChineseCharReadingsTest'`，預期編譯失敗（`Unresolved reference: ChineseCharReadings`）。
+
+- [ ] **Step 3: 實作** `java/src/org/futo/inputmethod/engine/general/ChineseCharReadings.kt`：
+
+```kotlin
+package org.futo.inputmethod.engine.general
+
+import java.io.File
+import java.io.Reader
+
+/**
+ * Readings (luna_pinyin spellings, without tone) of single characters, from the dictionary's
+ * `luna_pinyin.dict.yaml`. The reranker uses it so that, for one syllable, only characters
+ * with the typed reading are scored; Rime also offers characters with other readings.
+ */
+class ChineseCharReadings private constructor(private val readings: Map<String, Set<String>>) {
+    /** Number of characters with at least one reading. */
+    val size: Int get() = readings.size
+
+    /** True if [ch] (one character) can be read as [spelling]. */
+    fun has(ch: String, spelling: String): Boolean = readings[ch]?.contains(spelling) == true
+
+    companion object {
+        const val FILE = "luna_pinyin.dict.yaml"
+
+        /** The readings in [sharedDir], or null if the dictionary has no [FILE]. */
+        fun load(sharedDir: File): ChineseCharReadings? {
+            val file = File(sharedDir, FILE)
+            if (!file.exists()) return null
+            return file.bufferedReader().use { parse(it) }
+        }
+
+        fun parse(reader: Reader): ChineseCharReadings {
+            val readings = HashMap<String, MutableSet<String>>()
+            var inBody = false
+            reader.forEachLine { line ->
+                if (!inBody) {
+                    if (line.trimEnd() == "...") inBody = true
+                    return@forEachLine
+                }
+                if (line.isEmpty() || line.startsWith("#")) return@forEachLine
+                val fields = line.split('\t')
+                if (fields.size < 2) return@forEachLine
+                val ch = fields[0]
+                if (ch.isEmpty() || ch.codePointCount(0, ch.length) != 1) return@forEachLine
+                val spelling = fields[1].trim()
+                if (spelling.isEmpty()) return@forEachLine
+                readings.getOrPut(ch) { HashSet(2) }.add(spelling)
+            }
+            return ChineseCharReadings(readings)
+        }
+    }
+}
+```
+
+- [ ] **Step 4: 確認測試通過**：同上指令，6 個 PASS。
+
+- [ ] **Step 5: 接進 ChineseIME**
+  - 新增欄位（放在 `scorer` 等欄位附近）：
+    ```kotlin
+    /** Single-character readings for the reranker; null until loaded, or without luna_pinyin.dict.yaml. */
+    private var charReadings: ChineseCharReadings? = null
+    private var charReadingsJob: Job? = null
+    ```
+  - 在 `ensureAssociationLoaded` 之後新增，寫法比照它（只在注音布局載入、詞庫換過時重載、所有例外記 log 後當作 null、`CancellationException` 往外拋）：
+    ```kotlin
+    /** Loads the single-character readings the reranker filters one-syllable candidates with. */
+    private fun ensureCharReadingsLoaded(reload: Boolean = false) {
+        if(reload) {
+            charReadingsJob?.cancel()
+            charReadingsJob = null
+            charReadings = null
+        }
+        if(!isBopomofo || charReadingsJob != null) return
+        charReadingsJob = coroScope.launch {
+            charReadings = withContext(Dispatchers.IO) {
+                try {
+                    ChineseCharReadings.load(getShared(helper.context))
+                } catch(e: CancellationException) {
+                    throw e
+                } catch(e: Exception) {
+                    Log.e(TAG, "Failed to load character readings", e)
+                    null
+                } catch(e: OutOfMemoryError) {
+                    Log.e(TAG, "Out of memory loading character readings", e)
+                    null
+                }
+            }
+            Log.i(TAG, "Character readings: ${charReadings?.size ?: 0} characters")
+        }
+    }
+    ```
+  - 在 `onStartInput()` 的 `ensureAssociationLoaded(reload = dictionaryChanged)` 之後加 `ensureCharReadingsLoaded(reload = dictionaryChanged)`；在布局切換處既有的 `ensureAssociationLoaded()` 之後加 `ensureCharReadingsLoaded()`。
+  - `maybeRerank` 中把
+    ```kotlin
+    val scorable = ZhuyinReranker.scorable(words, reading.size, scorer::covers)
+    ```
+    改成
+    ```kotlin
+        // For one syllable the model reads only the context, and Rime also offers characters
+        // with other readings (e.g. 不 and 到 for ㄉㄜ˙): score only characters with the typed reading.
+        val spelling = if(reading.size == 1) ZhuyinSyllables.toLunaPinyin(reading[0].base) else null
+        val readings = charReadings
+        val covers: (String) -> Boolean =
+            if(spelling != null && readings != null) { word -> scorer.covers(word) && readings.has(word, spelling) }
+            else scorer::covers
+        val scorable = ZhuyinReranker.scorable(words, reading.size, covers)
+    ```
+
+- [ ] **Step 6: Spec**：在「## 排序規則」的條列最後加一條：「單音節時，只有讀音（不含聲調，依詞庫 `luna_pinyin.dict.yaml`）和所打注音相同的字參加評分；Rime 第一名不符合時不調整。詞庫沒有這個檔案時不篩選。」
+
+- [ ] **Step 7: 建置與測試**：`./gradlew testUnstableDebugUnitTest --tests 'org.futo.inputmethod.engine.general.*' assembleUnstableDebug`，BUILD SUCCESSFUL、全部 PASS、改動的檔案沒有新警告（ChineseIME.kt 既有一個 `locale` 棄用警告）。
+
+- [ ] **Step 8: Commit**（訊息 "Score only same-reading characters for one Zhuyin syllable"，結尾兩行 trailer 同 Global Constraints）。
