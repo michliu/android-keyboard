@@ -168,6 +168,15 @@ object ChineseIMESettings {
         true
     )
 
+    /**
+     * Rime's typo correction for Zhuyin. Off by default: it also turns correctly typed input into
+     * other words (offline, whole 4–12 character phrases: 46% exact without it, 32% with it).
+     */
+    val ZhuyinCorrectionSetting = SettingsKey(
+        booleanPreferencesKey("ChineseIME_zhuyin_correction"),
+        false
+    )
+
     var schemaList: List<RimeSchema> = emptyList()
     val menu = UserSettingsMenu(
         title = R.string.chinese_settings_title,
@@ -243,6 +252,14 @@ object ChineseIMESettings {
                     stringResource(R.string.chinese_setting_rerank),
                     RerankSetting,
                     subtitle = stringResource(R.string.chinese_setting_rerank_subtitle)
+                )
+            },
+
+            UserSetting(R.string.chinese_setting_zhuyin_correction, R.string.chinese_setting_zhuyin_correction_subtitle) {
+                SettingToggleDataStore(
+                    stringResource(R.string.chinese_setting_zhuyin_correction),
+                    ZhuyinCorrectionSetting,
+                    subtitle = stringResource(R.string.chinese_setting_zhuyin_correction_subtitle)
                 )
             },
 
@@ -1001,8 +1018,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     helper.context.getSetting(ChineseIMESettings.FuzzyPinyinSetting)
                 )
 
-                val autocorrect = settings.mAutoCorrectionEnabledPerUserSettings
-                        || settings.isSuggestionsEnabledPerUserSettings
+                // Zhuyin has its own setting (see ZhuyinCorrectionSetting).
+                val autocorrect = if(schema.startsWith("futo_bopomofo")) {
+                    helper.context.getSetting(ChineseIMESettings.ZhuyinCorrectionSetting)
+                } else {
+                    settings.mAutoCorrectionEnabledPerUserSettings
+                            || settings.isSuggestionsEnabledPerUserSettings
+                }
 
                 val learning = settings.isPersonalizationEnabled
 
