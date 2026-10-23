@@ -14,7 +14,7 @@ Spec：`docs/superpowers/specs/2026-10-23-zhuyin-taiwan-forms-design.md`
 
 - 只影響注音方案（`futo_bopomofo`、`futo_bopomofo_terra`）；拼音、筆畫方案的 custom patch 不變。
 - 簡體輸出（`cfg.simplification`）時 `futo_zh_tw` 為 0，否則為 1。
-- 對照表來源：OpenCC `TWVariants.txt`（Apache-2.0），只用一對一、且來源與目標不同的 40 組。
+- 對照表來源：OpenCC `TWVariants.txt`（Apache-2.0），只用一對一、且來源與目標不同的 38 組。
 - Commit 結尾必須是這兩行（前面空一行）：
   ```
   Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>

@@ -12,7 +12,7 @@
 
 1. **Rime 方案**：`futo_bopomofo.schema.yaml`（`futo_bopomofo_terra` 經由 include 共用）的 filters 在 `simplifier` 之後加 `simplifier@zh_tw`，設定 `opencc_config: t2tw.json`、`option_name: futo_zh_tw`。詞庫 zip 已附 `opencc/t2tw.json`。
 2. **開關**：App 寫入的 `<schema>.custom.yaml` 只對注音方案（`futo_bopomofo*`）加上 `futo_zh_tw` 開關，`reset` 在簡體輸出時為 0、否則為 1（t2tw 會把簡體正字「着」轉成「著」）。拼音、筆畫方案不變。
-3. **對照表**：新增 `TaiwanVariants`（Kotlin），內含 OpenCC `TWVariants.txt` 的 40 組一對一字形（Apache-2.0），提供 `toTaiwan(text)`。致謝頁加 OpenCC。
+3. **對照表**：新增 `TaiwanVariants`（Kotlin），內含 OpenCC `TWVariants.txt` 的 38 組一對一字形（Apache-2.0），提供 `toTaiwan(text)`。致謝頁加 OpenCC。
 4. **聯想詞**：`ChineseAssociation.parse` 建索引前先把 `essay.txt` 的詞轉成台灣字形，上屏「為」可查到原本「爲」開頭的詞。
 5. **讀音表**：`ChineseCharReadings` 讀到傳統字形的字時，也為它的台灣字形記同樣的讀音。
 6. `BundledRimeAssets.VERSION` 加 1，讓既有安裝更新方案檔。

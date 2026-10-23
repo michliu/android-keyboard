@@ -1008,7 +1008,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     ChineseCustomDict.entries(UserDictionaryIO(helper.context).get())
                 }
                 val customDict = withContext(Dispatchers.IO) { ChineseCustomDict.render(customEntries) }
-                personalWords = customEntries.map { it.text }.toSet()
+                // Rime shows them in Taiwan forms (the t2tw filter) unless output is simplified.
+                personalWords = customEntries.flatMap { listOf(it.text, TaiwanVariants.toTaiwan(it.text)) }.toSet()
 
                 // The IO block above is a suspension point: an editing session may have started
                 // while the personal dictionary was being read. Do not deploy in that case.
