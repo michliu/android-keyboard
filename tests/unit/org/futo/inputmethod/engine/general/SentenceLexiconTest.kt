@@ -2,6 +2,7 @@ package org.futo.inputmethod.engine.general
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.fail
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -203,11 +204,36 @@ class SentenceLexiconTest {
         for (i in 0 until 8) bytes[at + i] = 0xFF.toByte()
         cache.writeBytes(bytes)
         assertWorks(SentenceLexicon.loadOrBuild(cache, shared, emptyList()))
-        // Garbage in the counts as well.
+        // A huge key count (it sits just before the first key).
         val garbled = cache.readBytes()
-        for (i in 12 until 24) garbled[i] = 0x7F
+        val countAt = at - 4
+        val s2 = java.io.ByteArrayInputStream(garbled)
+        val d2 = DataInputStream(s2)
+        d2.readInt(); d2.readInt(); d2.readUTF()
+        repeat(d2.readInt()) { d2.readUTF() }
+        assertEquals(countAt, garbled.size - s2.available())
+        garbled[countAt] = 0x00; garbled[countAt + 1] = 0x7F
+        garbled[countAt + 2] = 0xFF.toByte(); garbled[countAt + 3] = 0xFF.toByte()
         cache.writeBytes(garbled)
         assertWorks(SentenceLexicon.loadOrBuild(cache, shared, emptyList()))
+    }
+
+    @Test
+    fun readRejectsHugeCountWithShortStream() {
+        val out = ByteArrayOutputStream()
+        DataOutputStream(out).use {
+            it.writeInt(0x5A534C58)
+            it.writeInt(1)
+            it.writeUTF("t")
+            it.writeInt(0)
+            it.writeInt(9_000_000)
+        }
+        val bytes = out.toByteArray()
+        try {
+            SentenceLexicon.read(ByteArrayInputStream(bytes), "t", bytes.size.toLong())
+            fail("expected IOException")
+        } catch (e: java.io.IOException) {
+        }
     }
 
     @Test

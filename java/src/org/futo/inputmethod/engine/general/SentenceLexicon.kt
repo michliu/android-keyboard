@@ -148,20 +148,33 @@ class SentenceLexicon private constructor(
          * dictionary has no luna_pinyin.dict.yaml or essay.txt.
          */
         fun loadOrBuild(cache: File, sharedDir: File, personal: List<ChineseCustomDict.Entry>): SentenceLexicon? {
-            val tag = tag(sharedDir, personal)
+            val tag = try {
+                tag(sharedDir, personal)
+            } catch (e: IOException) {
+                return null
+            }
             if (cache.exists()) {
                 try {
-                    cache.inputStream().use { read(it, tag) }?.let { return it }
+                    cache.inputStream().use { read(it, tag, cache.length()) }?.let { return it }
                 } catch (e: IOException) {
                     // Truncated or corrupt: rebuild below.
                 } catch (e: RuntimeException) {
                     // Corrupt in a way that broke an assumption: rebuild below.
+                } catch (e: OutOfMemoryError) {
+                    // Absurd allocation from a corrupt file: rebuild below.
                 }
             }
             val dict = File(sharedDir, DICT_FILE)
             val essay = File(sharedDir, ESSAY_FILE)
             if (!dict.exists() || !essay.exists()) return null
-            val lexicon = dict.bufferedReader().use { d -> essay.bufferedReader().use { e -> build(d, e, personal) } }
+            // Temp files of a process killed while writing.
+            cache.parentFile?.listFiles { f -> f.name.startsWith("lexicon") && f.name.endsWith(".tmp") }
+                ?.forEach { it.delete() }
+            val lexicon = try {
+                dict.bufferedReader().use { d -> essay.bufferedReader().use { e -> build(d, e, personal) } }
+            } catch (e: IOException) {
+                return null
+            }
             var tmp: File? = null
             try {
                 cache.parentFile?.mkdirs()
@@ -188,17 +201,40 @@ class SentenceLexicon private constructor(
          * The lexicon written by [write] with the same [tag], or null if the tag or format
          * differs. Throws [IOException] if the data is truncated or inconsistent.
          */
-        fun read(input: InputStream, tag: String): SentenceLexicon? {
-            val data = DataInputStream(input.buffered())
+        fun read(input: InputStream, tag: String): SentenceLexicon? = read(input, tag, Long.MAX_VALUE)
+
+        private class CountingInputStream(input: InputStream) : java.io.FilterInputStream(input) {
+            var count = 0L
+            override fun read(): Int = super.read().also { if (it >= 0) count++ }
+            override fun read(b: ByteArray, off: Int, len: Int): Int =
+                super.read(b, off, len).also { if (it > 0) count += it }
+            override fun skip(n: Long): Long = super.skip(n).also { count += it }
+        }
+
+        /** As [read], with counts bounded by the [byteLimit] bytes the stream holds. */
+        internal fun read(input: InputStream, tag: String, byteLimit: Long): SentenceLexicon? {
+            val counter = CountingInputStream(input.buffered())
+            val data = DataInputStream(counter)
+            fun need(bytes: Long) {
+                if (bytes < 0 || bytes > byteLimit - counter.count) throw IOException("Count exceeds file size")
+            }
             if (data.readInt() != MAGIC || data.readInt() != FORMAT || data.readUTF() != tag) return null
-            val syllables = Array(data.readCount(BASE.toInt())) { data.readUTF() }
+            val syllableCount = data.readCount(BASE.toInt())
+            need(syllableCount * 2L)
+            val syllables = Array(syllableCount) { data.readUTF() }
+            need(4)
             val keyCount = data.readCount(MAX_COUNT)
+            need(keyCount * 8L + (keyCount + 1L) * 4)
             val keys = LongArray(keyCount) { data.readLong() }
             val entryStarts = IntArray(keyCount + 1) { data.readInt() }
+            need(4)
             val entryCount = data.readCount(MAX_COUNT)
+            need((entryCount + 1L) * 4 + entryCount * 4L)
             val wordStarts = IntArray(entryCount + 1) { data.readInt() }
             val scores = FloatArray(entryCount) { data.readFloat() }
+            need(4)
             val byteCount = data.readCount(MAX_TEXT_BYTES)
+            need(byteCount.toLong())
             val bytes = ByteArrayOutputStream(minOf(byteCount, 1 shl 20))
             val chunk = ByteArray(1 shl 16)
             var left = byteCount
@@ -284,8 +320,10 @@ class SentenceLexicon private constructor(
                 if (parts.size != length || length > MAX_WORD) return null
                 var key = 0L
                 for (p in parts) {
-                    val id = syllableIds.getOrPut(p) { syllableIds.size }
-                    if (id >= BASE - 1) return null
+                    val id = syllableIds[p] ?: run {
+                        if (syllableIds.size >= BASE - 1) return null
+                        syllableIds.size.also { syllableIds[p] = it }
+                    }
                     key = key * BASE + (id + 1)
                 }
                 return key
@@ -315,6 +353,7 @@ class SentenceLexicon private constructor(
             val maxWeight = records.maxWeight
             val personalSeen = HashSet<Pair<Long, String>>()
             for (entry in personal) {
+                if (entry.code.isBlank()) continue
                 val word = TaiwanVariants.toTaiwan(entry.text)
                 val key = keyOf(entry.code, word.codePointCount(0, word.length)) ?: continue
                 if (personalSeen.add(key to word)) records.add(key, word, maxWeight + 1)
