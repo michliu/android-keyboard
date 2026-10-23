@@ -320,6 +320,29 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private var rerankJob: Job? = null
     /** Display position → Rime index of the candidates shown; null while they are in Rime's order. */
     private var candidateOrder: IntArray? = null
+    /** Words for whole-sentence candidates (整句); null until loaded or built, or after it failed. */
+    private var sentenceLexicon: SentenceLexicon? = null
+    private var sentenceLexiconJob: Job? = null
+    private var sentenceLexiconFailed = false
+    /** What [sentenceLexicon] was built from (see SentenceLexicon.tag). */
+    private var sentenceLexiconTag: String? = null
+    /** Personal-dictionary entries of the last configuration update, for [sentenceLexicon]. */
+    private var personalEntries: List<ChineseCustomDict.Entry> = emptyList()
+    /** Whether [personalEntries] was filled by a configuration update; no build starts before. */
+    private var personalEntriesLoaded = false
+    /**
+     * A sentence of the model shown in place of Rime's: [sentence] for the composition [preedit],
+     * in which [chosen] was already chosen before it.
+     */
+    private data class SentenceChoice(val preedit: String, val chosen: String, val sentence: String)
+    /**
+     * The model's sentence shown first in place of Rime's; null when none is shown. Shown at
+     * display position 0, which [candidateOrder] maps to -1.
+     */
+    private var sentenceOverride: SentenceChoice? = null
+    private var sentenceCommitting = false
+    /** Commits Rime made (RimeMessage.Commit); tells [commitSentence] that a selection committed. */
+    private var rimeCommits = 0
 
     override fun getLoadingState(): MutableState<Boolean>? = rimeLoading
 
@@ -359,6 +382,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         /** A rerank slower than this is dropped: the strip would change after the user moved on. */
         private const val RerankTimeoutMs = 300L
         private const val RerankContextChars = 64
+        private const val SentenceRerankTimeoutMs = 500L
+        /** Rime selections tried for one sentence before committing the rest directly. */
+        private const val MaxSentenceSteps = 12
+        /** [ensureSentenceLexicon]'s result when the dictionary has no sources for it. */
+        private val NoSentenceDictionary = "" to null
 
         @JvmStatic
         fun getRimeDir(context: Context) = context.getExternalFilesDir("rime")
@@ -480,6 +508,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             else -> {}
         }
         is RimeMessage.Commit -> {
+            rimeCommits++
             connect?.commitText(msg.value, 1)
             showAssociations(msg.value, msg.value)
         }
@@ -499,6 +528,19 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         helper.updateUiInputState(ped.isEmpty() && notEditing)
         helper.setPreedit(FloatingPreEdit.build(ped, this, currentTransformation, rawInput.text))
 
+        // The model's sentence was for another composition (e.g. a tone typed without changing
+        // the candidates): show Rime's order again, as for new candidates.
+        if(sentenceOverride.let { it != null && it.preedit != ped }) {
+            candidateOrder = null
+            sentenceOverride = null
+            rerankJob?.cancel()
+            val candidates = rime.candidatesFlow.value
+            // Empty: a commit, whose associations stay; the candidates collector handles the rest.
+            if(ped.isNotEmpty() && notEditing && candidates.isNotEmpty()) {
+                showSuggestionStrip(candidateWords(candidates.map { it.text }, candidates.map { it.comment }))
+            }
+        }
+
         // Typing tone 1 (space) marks the syllable but can leave Rime's candidates unchanged, and
         // the candidates flow does not emit an equal list again: score them for this preedit here.
         if(ped.isNotEmpty() && notEditing) {
@@ -511,6 +553,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         editingState = EditingState.Editing
         rerankJob?.cancel()
         candidateOrder = null
+        sentenceOverride = null
     }
 
     // For pinyin/stroke layouts the only valid characters for input simulation are ASCII letters;
@@ -585,6 +628,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private fun subscribeToRimeCandidates() = rime.candidatesFlow.onEach { cdd ->
         // New candidates are always shown in Rime's order first.
         candidateOrder = null
+        sentenceOverride = null
         rerankJob?.cancel()
 
         waitingToSelect?.let { sel ->
@@ -734,6 +778,61 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         }
     }
 
+    /**
+     * Loads the sentence lexicon in the background, building it (seconds) on first use or when
+     * the dictionary or personal words changed; does nothing if the loaded one still matches.
+     * The previous one stays in use meanwhile.
+     */
+    private fun ensureSentenceLexicon() {
+        if(!isBopomofo || sentenceLexiconJob != null || sentenceLexiconFailed) return
+        // Wait for the personal words, or the build would run again once they arrive.
+        if(!personalEntriesLoaded) return
+        if(!helper.context.getSetting(ChineseIMESettings.RerankSetting)) return
+        val personal = personalEntries
+        val shared = getShared(helper.context)
+        val cache = File(helper.context.filesDir, "zhuyin-sentence/lexicon.bin")
+        val loadedTag = sentenceLexiconTag
+        sentenceLexiconJob = coroScope.launch {
+            val start = SystemClock.elapsedRealtime()
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    // No dictionary (yet): not a failure, a later one is picked up on its arrival.
+                    if(!File(shared, SentenceLexicon.DICT_FILE).exists() || !File(shared, SentenceLexicon.ESSAY_FILE).exists()) {
+                        return@withContext NoSentenceDictionary
+                    }
+                    val tag = SentenceLexicon.tag(shared, personal)
+                    if(tag == loadedTag) null else tag to SentenceLexicon.loadOrBuild(cache, shared, personal)
+                } catch(e: CancellationException) {
+                    throw e
+                } catch(e: Exception) {
+                    Log.e(TAG, "Failed to load the sentence lexicon", e)
+                    "" to null
+                } catch(e: OutOfMemoryError) {
+                    Log.e(TAG, "Out of memory loading the sentence lexicon", e)
+                    "" to null
+                }
+            }
+            sentenceLexiconJob = null
+            if(result === NoSentenceDictionary) {
+                sentenceLexicon = null
+                sentenceLexiconTag = null
+                Log.i(TAG, "Sentence lexicon: no dictionary")
+                return@launch
+            }
+            val (tag, loaded) = result ?: return@launch
+            if(loaded != null) {
+                sentenceLexicon = loaded
+                sentenceLexiconTag = tag
+            } else {
+                // A failure disables sentences until restart, including an older lexicon.
+                sentenceLexiconFailed = true
+                sentenceLexicon = null
+                sentenceLexiconTag = null
+            }
+            Log.i(TAG, "Sentence lexicon: ${loaded?.entryCount ?: 0} words in ${SystemClock.elapsedRealtime() - start} ms")
+        }
+    }
+
     /** Texts of the personal-dictionary words; Rime ranks them first, so the reranker leaves them. */
     private var personalWords: Set<String> = emptySet()
 
@@ -746,6 +845,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         rerankJob?.cancel()
         rerankJob = null
         val scorer = scorer ?: return
+        if(sentenceCommitting) return
         if(!isBopomofo || isOnEnglishPage || editingState.active) return
         if(!helper.context.getSetting(ChineseIMESettings.RerankSetting)) return
         // Only once the last syllable has its tone (space counts as tone 1).
@@ -758,8 +858,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0) return
 
         val preedit = rime.preeditFlow.value
-        val reading = ZhuyinReading.parse(preedit) ?: return
-        if(reading.size > ZhuyinReranker.MAX_SYLLABLES) return
+        val (chosen, reading) = ZhuyinReading.splitSelected(preedit) ?: return
+        if(reading.size in SentenceNBest.SYLLABLES) {
+            maybeRerankSentence(scorer, candidates, preedit, chosen, reading)
+            return
+        }
+        // Words the user already chose are only handled for sentences.
+        if(chosen.isNotEmpty() || reading.size > ZhuyinReranker.MAX_SYLLABLES) return
         val words = candidates.map { it.text }
         // For one syllable the model reads only the context, and Rime also offers characters
         // with other readings (e.g. 不 and 到 for ㄉㄜ˙): score only characters with the typed reading.
@@ -799,6 +904,110 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             if(editingState.active || isOnEnglishPage || !isBopomofo) return@launch
             candidateOrder = order
             showSuggestionStrip(candidateWords(order.map { words[it] }, order.map { candidates[it].comment }))
+        }
+    }
+
+    /**
+     * Scores Rime's sentence against the lexicon's best sentences for the same reading and, if
+     * the model clearly prefers another, shows that one first (Rime's moves to second).
+     */
+    private fun maybeRerankSentence(
+        scorer: CandidateScorer, candidates: List<RimeCandidate>, preedit: String,
+        chosen: String, reading: List<ZhuyinSyllable>,
+    ) {
+        // Traditional output only; unknown before the first configuration update.
+        if(prevConfiguration?.simplification != false) return
+        val lexicon = sentenceLexicon ?: run { ensureSentenceLexicon(); return }
+        val words = candidates.map { it.text }
+        val rimeSentence = words.first()
+        if(rimeSentence.codePointCount(0, rimeSentence.length) != reading.size || !scorer.covers(rimeSentence)) return
+        val spellings = reading.map { ZhuyinSyllables.toLunaPinyin(it.base) ?: return }
+        val context = connect?.getTextBeforeCursor(RerankContextChars, 0)?.toString().orEmpty() + chosen
+
+        rerankJob = coroScope.launch {
+            val start = SystemClock.elapsedRealtime()
+            val result = withContext(rerankDispatcher) {
+                try {
+                    val list = SentenceNBest.candidates(lexicon, spellings, rimeSentence, scorer::covers)
+                    if(list.size < 2) null
+                    else scorer.score(context, reading, list)?.let { list to it }
+                } catch(e: CancellationException) {
+                    throw e
+                } catch(e: Exception) {
+                    Log.e(TAG, "Sentence rerank failed", e)
+                    null
+                } catch(e: OutOfMemoryError) {
+                    Log.e(TAG, "Out of memory during sentence rerank", e)
+                    null
+                }
+            } ?: return@launch
+            val (list, scores) = result
+            val elapsed = SystemClock.elapsedRealtime() - start
+            Log.d(TAG, "Sentence rerank: ${list.size} sentences in $elapsed ms")
+            if(elapsed > SentenceRerankTimeoutMs) {
+                Log.w(TAG, "Sentence rerank took $elapsed ms; ignored")
+                return@launch
+            }
+            if(rime.preeditFlow.value != preedit || rime.candidatesFlow.value.map { it.text } != words) return@launch
+            if(editingState.active || isOnEnglishPage || !isBopomofo || sentenceCommitting) return@launch
+            val best = SentenceNBest.promoted(scores) ?: return@launch
+            val sentence = list[best]
+            // Rime may offer the same sentence further down: show it only once, first.
+            val rest = words.indices.filter { words[it] != sentence }
+            sentenceOverride = SentenceChoice(preedit, chosen, sentence)
+            candidateOrder = (listOf(-1) + rest).toIntArray()
+            showSuggestionStrip(candidateWords(
+                listOf(sentence) + rest.map { words[it] }, listOf(null) + rest.map { candidates[it].comment }))
+        }
+    }
+
+    /**
+     * Commits the model's sentence: selects its words one by one among Rime's candidates so that
+     * Rime learns them; if Rime offers no word that leads there, clears the composition and
+     * commits the text directly. Keys typed meanwhile are never dropped: if the composition is
+     * no longer the one the sentence was shown for, space's usual choice (Rime's first) is made
+     * instead if [firstIfStale] (otherwise nothing), and if it changes during the selections the
+     * rest is left to the user.
+     */
+    private suspend fun commitSentence(choice: SentenceChoice, firstIfStale: Boolean) {
+        val (shownFor, chosen, target) = choice
+        sentenceCommitting = true
+        try {
+            var preedit = rime.getPreedit()
+            if(preedit != shownFor) {
+                if(firstIfStale && !rime.selectCandidate(0)) rime.commitComposition()
+                return
+            }
+            var done = ""
+            for(step in 0 until MaxSentenceSteps) {
+                val candidates = rime.getCandidates().map { it.text }
+                val remaining = target.substring(done.length)
+                val index = SentenceSelector.next(candidates, remaining)
+                if(index < 0) break
+                val word = candidates[index]
+                val commits = rimeCommits
+                if(!rime.selectCandidate(index)) break
+                // Rime committed the composition (RimeMessage.Commit, handled before this resumes:
+                // both run on the main thread in that order), which commits the text. Its preedit
+                // may already hold a key typed since, so the commit count tells, not the preedit.
+                if(rimeCommits != commits) return
+                preedit = rime.getPreedit()
+                if(preedit.isEmpty()) return
+                done += word
+                // The whole sentence is selected but Rime did not commit, or it went elsewhere.
+                if(done.length >= target.length || !preedit.startsWith(chosen + done)) break
+            }
+            // Only replace the composition the loop saw: a key typed meanwhile changes Rime's
+            // preedit, or is still on its way to Rime but already in rawInput (cleared by the
+            // caller; both happen on the main thread with no suspension in between). The preedit
+            // must also still be the words selected so far followed by the rest of the reading.
+            if(!preedit.startsWith(chosen + done)) return
+            if(rime.getPreedit() != preedit || rawInput.text.isNotEmpty()) return
+            rime.clearComposition()
+            connect?.commitText(chosen + target, 1)
+            showAssociations(chosen + target, chosen + target)
+        } finally {
+            sentenceCommitting = false
         }
     }
 
@@ -881,6 +1090,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         updateConfig()
         ensureAssociationLoaded(reload = dictionaryChanged)
         ensureCharReadingsLoaded(reload = dictionaryChanged)
+        if(dictionaryChanged) {
+            // A new dictionary may bring the sources a failed or missing lexicon lacked.
+            sentenceLexiconJob?.cancel()
+            sentenceLexiconJob = null
+            sentenceLexiconFailed = false
+            sentenceLexiconTag = null
+            sentenceLexicon = null
+        }
         ensureScorerLoaded()
     }
 
@@ -1039,6 +1256,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 val customDict = withContext(Dispatchers.IO) { ChineseCustomDict.render(customEntries) }
                 // Rime shows them in Taiwan forms (the t2tw filter) unless output is simplified.
                 personalWords = customEntries.flatMap { listOf(it.text, TaiwanVariants.toTaiwan(it.text)) }.toSet()
+                personalEntries = customEntries
+                personalEntriesLoaded = true
+                ensureSentenceLexicon()
 
                 // The IO block above is a suspension point: an editing session may have started
                 // while the personal dictionary was being read. Do not deploy in that case.
@@ -1247,9 +1467,15 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         }
 
         if(codePoint == ' '.code) {
+            // A sentence is being committed through Rime; a space now would interleave with it.
+            if(sentenceCommitting) return true
             val first = rimeIndexOf(0)
             val firstText = rime.candidatesFlow.value.getOrNull(first)?.text
-            coroScope.launch {
+            // -1: the model's sentence is shown first.
+            val sentence = if(first < 0) sentenceOverride else null
+            // Set now, not when the coroutine runs, so that the next key already sees it.
+            if(sentence != null) sentenceCommitting = true
+            coroScope.launch { try {
                 when {
                     rawInput.text.isEmpty() && rime.preeditFlow.value.isEmpty() -> {
                         // Not composing: behave like the generic path (a plain space).
@@ -1261,16 +1487,22 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                         // (which the reranker may have moved ahead of Rime's first), like the
                         // pinyin layout does.
                         rawInput.clear()
-                        // The candidates may have changed since the key was pressed.
-                        val index = if(rime.candidatesFlow.value.getOrNull(first)?.text == firstText) first else 0
-                        if(!rime.selectCandidate(index)) rime.commitComposition()
+                        if(sentence != null) {
+                            commitSentence(sentence, firstIfStale = true)
+                        } else {
+                            // The candidates may have changed since the key was pressed.
+                            val index = if(rime.candidatesFlow.value.getOrNull(first)?.text == firstText) first else 0
+                            if(!rime.selectCandidate(index)) rime.commitComposition()
+                        }
                     }
                     else -> {
                         rawInput.append(' '.code)
                         rime.processX11Code(' '.code)
                     }
                 }
-            }
+            } finally {
+                if(sentence != null) sentenceCommitting = false
+            } }
             return true
         }
 
@@ -1333,6 +1565,17 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     val next = (context + suggestion.word).let { it.substring(it.offsetByCodePoints(it.length, -minOf(2, it.codePointCount(0, it.length)))) }
                     showAssociations(next, suggestion.word)
                 } else {
+                    // A sentence is being committed through Rime; a selection now would interleave with it.
+                    if(sentenceCommitting) return
+                    val sentence = sentenceOverride
+                    if(sentence != null && rimeIndexOf(suggestion.mCandidateIndex) < 0 && suggestion.word == sentence.sentence) {
+                        // Shown for another composition: the tap was meant for that one.
+                        if(rime.preeditFlow.value != sentence.preedit) return
+                        rawInput.clear()
+                        sentenceCommitting = true
+                        coroScope.launch { commitSentence(sentence, firstIfStale = false) }
+                        return
+                    }
                     var index = rimeIndexOf(suggestion.mCandidateIndex)
                     if(rime.candidatesFlow.value.getOrNull(index)?.text != suggestion.word) {
                         // The strip changed since it was drawn: find the tapped word itself.

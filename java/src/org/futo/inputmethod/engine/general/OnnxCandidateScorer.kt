@@ -56,7 +56,8 @@ class OnnxCandidateScorer private constructor(
 
     companion object {
         private const val ASSET_DIR = "zhuyin-rerank"
-        private const val THREADS = 2
+        /** Sentences (up to 16 × 12 characters) need 4; 2 took ~350 ms on a phone. */
+        private const val THREADS = 4
 
         /** Loads the bundled model; throws if it cannot (e.g. no native library on x86). */
         fun load(context: Context): OnnxCandidateScorer {

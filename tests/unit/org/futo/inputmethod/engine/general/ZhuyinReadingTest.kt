@@ -51,4 +51,18 @@ class ZhuyinReadingTest {
         assertNull(ZhuyinReading.parse(""))
         assertNull(ZhuyinReading.parse("   "))
     }
+
+    @Test
+    fun splitSelectedSeparatesChosenText() {
+        assertEquals("請到" to listOf(ZhuyinSyllable("ㄉㄥ", 1), ZhuyinSyllable("ㄐㄧ", 4)),
+            ZhuyinReading.splitSelected("請到ㄉㄥˉ ㄐㄧˋ"))
+        assertEquals("" to listOf(ZhuyinSyllable("ㄉㄥ", 1)), ZhuyinReading.splitSelected("ㄉㄥˉ"))
+    }
+
+    @Test
+    fun splitSelectedNeedsTonedSyllables() {
+        assertEquals(null, ZhuyinReading.splitSelected("請到"))
+        assertEquals(null, ZhuyinReading.splitSelected("請到ㄉㄥ"))
+        assertEquals(null, ZhuyinReading.splitSelected(""))
+    }
 }
