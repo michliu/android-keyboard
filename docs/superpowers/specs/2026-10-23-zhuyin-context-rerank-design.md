@@ -1,0 +1,84 @@
+# 注音候選依前文排序設計
+
+日期：2026-10-23
+
+## 目標
+
+打注音時，依游標前的文字，把 Rime 候選中最合理的一個移到第一位。例如前文是「候選人發表」時打 ㄓㄥˋ ㄐㄧㄢˋ，「政見」排到「證件」前面；前文是「我現在」時打 ㄗㄞˋ，「在」排到「再」前面。
+
+## 可行性測試的結論（2026-10-23）
+
+- 模型：Funmula/0c-sequence-d512（MIT），revision `df4b9f04f8aee1dd34dcb246ac2b83c4ab3d14a9`，原始 `model.onnx` SHA-256 `71af1f0e77b2752cc71cbc04bf19c8e8f2e765662246f766e65a2822bab4e66e`（130MB）。以 ONNX Runtime 動態 int8 量化後約 33MB。
+- 自訂 20 題同音詞測試：原始版與 int8 版都答對 19 題，排序結果完全相同。
+- 小米手機（arm64）實測 int8、2 執行緒：載入約 0.2 秒；每個候選評分中位數 10–21 ms。
+- Rime 每個候選只提供文字和註解，沒有分數或斷詞；打整句時只有一個整句候選，所以不做整句排序。
+- Rime 的組字區以空白分隔音節並帶聲調，例如「ㄍㄨㄥ ㄩㄢˊ」。
+- Rime 的候選順序固定、不看前文（ㄓㄥˋ ㄐㄧㄢˋ 一律是 證件、整件、正見、政見…）。
+
+## 範圍
+
+- 只用於注音布局（`futo_bopomofo` 系列方案），簡體輸出時也適用（模型只決定順序，上屏文字仍由 Rime 轉換）。
+- 只處理 1–3 個音節的組字。4 個以上不評分，維持 Rime 順序。
+- 不做整句排序、不做補全、不改聯想詞。
+
+## 排序規則
+
+1. 候選池：Rime 目前候選清單中，從頭開始、字數等於音節數的候選，最多 8 個；含模型字表外字元的候選不評分，保留原位。
+2. 評分：
+   - 2–3 個音節：一般模式（前文＋讀音＋候選），計算 log P(候選 | 前文, 讀音)。
+   - 1 個音節：只看前文的模式，計算 log P(字 | 前文)；前文為空時不評分。
+3. 決定：只有當模型最高分的候選不是 Rime 第一名，且分數比 Rime 第一名高出至少 `PROMOTE_MARGIN = 2.0` 時，把它移到第一位；其餘候選維持 Rime 的相對順序。Rime 第一名不在可評分的候選中時，不調整。
+
+## 元件
+
+- `ZhuyinReading`（純 Kotlin）：把組字區文字拆成音節。每個音節分成「基底」與「聲調」（ˊ=2、ˇ=3、ˋ=4、˙=5、沒有記號=1）。音節為空、基底不在模型字表、或組字區含非注音字元時回傳 null（不評分）。
+- `RerankVocab`（純 Kotlin）：讀 `vocab.json`。字元 ID = 索引 + 8，基底 ID = 索引 + 2，0–7 是特殊符號（PAD=0、BOS=1、SEP=2、OUT=3、UNK=4）。
+- `RerankInput`（純 Kotlin）：依模型卡公開的輸入格式組出一次呼叫的張量，同一次評分的候選合併成一棵前綴樹，一次呼叫取得所有候選的分數。前文取最後 64 字，字表外的前文字元用 UNK。
+- `CandidateScorer` 介面：`fun score(context: String, reading: List<Syllable>, candidates: List<String>): FloatArray?`，回傳 null 代表無法評分。
+- `OnnxCandidateScorer`：用 `com.microsoft.onnxruntime:onnxruntime-android` 載入 assets 中的模型，2 個執行緒；只在 IO 執行緒上執行。
+- `ZhuyinReranker`（純 Kotlin）：給定 Rime 候選、音節、分數，回傳顯示順序（顯示位置 → Rime 索引的對照表）。
+
+本功能只依照模型卡（MIT）公開的格式自行實作，不複製 0c-ime 的程式碼（AGPL-3.0）。
+
+## 與 ChineseIME 的整合
+
+1. Rime 送來候選時，照 Rime 順序立即顯示，並記錄「顯示位置 → Rime 索引」為恆等對照。
+2. 符合條件時在單一背景工作中評分：注音布局、設定開啟、評分器已載入、1–3 個音節、非密碼欄位、非無痕模式。前文取 `getTextBeforeCursor(64)`。
+3. 新的候選或按鍵到來時，取消尚未完成的評分；只套用與當下組字區相同的結果。
+4. 套用結果時更新對照表並重新顯示建議列。
+5. 點選建議列與空白鍵選字都依對照表呼叫 `rime.selectCandidate(Rime 索引)`。空白鍵只有在第一位已被調整時才改走這條路徑；未調整時維持原本交給 Rime 的行為。
+
+## 打包
+
+- 模型：`java/assets/zhuyin-rerank/model.onnx`（int8）、`vocab.json`、`LICENSE`（MIT）、`SOURCE.md`（來源 repo、revision、原始與量化後的 SHA-256、量化指令）。
+- 量化指令（在電腦上執行一次，結果提交）：`onnxruntime.quantization.quantize_dynamic(model, out, weight_type=QInt8)`，onnxruntime 版本記在 `SOURCE.md`。
+- ONNX Runtime 只打包 arm64-v8a 與 armeabi-v7a；以 packaging 規則排除 x86、x86_64 的 `libonnxruntime*.so`。在這兩種架構上載入失敗，功能不啟用。
+- `model.onnx` 不壓縮存放（`noCompress 'onnx'`），以便直接從 assets 讀取。
+
+## 載入與錯誤處理
+
+- 第一次需要評分時在 IO 執行緒載入（約 0.2 秒）；載入中的評分請求直接跳過。
+- 載入失敗、評分出錯（含例外與 OOM）、或單次評分超過 300 ms：不調整順序，記一筆 log，之後照常打字。載入失敗後在本次程序存活期間不再重試。
+- `CancellationException` 照常往外拋。
+
+## 隱私
+
+前文與注音只在手機上交給本機模型，不經網路。密碼欄位與無痕模式不評分。
+
+## 設定
+
+中文設定新增「依前文排序候選」（Context-aware candidates）開關，預設開啟。
+
+## 測試
+
+- 單元測試：
+  - `ZhuyinReading`：有無聲調、輕聲、空白分隔、非注音字元、空字串。
+  - `RerankInput`：與電腦上 Python（模型卡格式）產生的張量逐筆比對，涵蓋 1、2、3 個音節與前文截斷。
+  - `ZhuyinReranker`：門檻 1.99／2.0 的邊界、Rime 第一名已是最高分、字數不同的候選、無法評分的候選、回傳 null。
+  - 選字對照：重新排序後點選與空白鍵選到正確的 Rime 索引。
+- 真機測試：
+  - 「候選人發表」＋ ㄓㄥˋ ㄐㄧㄢˋ → 政見第一；「請把」＋同音 → 證件第一。
+  - 「我現在」＋ ㄗㄞˋ → 在第一；「慢慢」＋ ㄉㄜ˙ → 地第一。
+  - 空白鍵與點選都上屏畫面上的第一個。
+  - 量測：每次按鍵到建議列更新的延遲、啟用前後的記憶體增量、APK 大小增量。
+  - 關閉設定後恢復 Rime 原本順序。
