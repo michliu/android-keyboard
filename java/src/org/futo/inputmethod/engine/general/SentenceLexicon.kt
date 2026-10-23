@@ -14,13 +14,14 @@ import kotlin.math.ln
 
 /**
  * Words by reading for whole-sentence candidates (整句), built from the dictionary's
- * `luna_pinyin.dict.yaml` and `essay.txt` plus the personal dictionary. Readings are
- * luna_pinyin syllables without tone.
+ * `luna_pinyin.dict.yaml` and `essay.txt`, with the personal dictionary's words layered on top
+ * by [withPersonal]. Readings are luna_pinyin syllables without tone.
  *
  * Stored compactly: a reading of up to [MAX_WORD] syllables is one Long key (syllable ids + 1
  * in base 512), keys are sorted, and the words of key i are entries
  * `entryStarts[i] until entryStarts[i + 1]`, best first; their text is one string cut at
- * `wordStarts`.
+ * `wordStarts`. Only these dictionary words are cached (see [write]); the personal words live in
+ * [overlay], keyed by the reading joined with single spaces.
  */
 class SentenceLexicon private constructor(
     private val syllables: Array<String>,
@@ -29,19 +30,37 @@ class SentenceLexicon private constructor(
     private val text: String,
     private val wordStarts: IntArray,
     private val scores: FloatArray,
+    /** The score of a word weighing one more than the heaviest dictionary word; personal words get it. */
+    val topScore: Float,
+    private val syllableIds: Map<String, Int> = idsOf(syllables),
+    private val overlay: Map<String, List<Entry>> = emptyMap(),
 ) {
     /** A word and its log share of the essay weights. */
     data class Entry(val word: String, val score: Float)
 
-    private val syllableIds: Map<String, Int> =
-        HashMap<String, Int>(syllables.size * 2).also { m -> syllables.forEachIndexed { i, s -> m[s] = i } }
-
+    /** Dictionary readings and words; personal words are not counted. */
     val keyCount: Int get() = keys.size
     val entryCount: Int get() = scores.size
 
-    /** The words read as [reading] (luna_pinyin syllables), best first. */
+    /**
+     * The words read as [reading] (luna_pinyin syllables), best first: personal words in the
+     * order given to [withPersonal], then dictionary words not already listed, [PER_KEY] at most.
+     */
     fun lookup(reading: List<String>): List<Entry> {
         if (reading.isEmpty() || reading.size > MAX_WORD) return emptyList()
+        val personal = if (overlay.isEmpty()) emptyList() else overlay[reading.joinToString(" ")].orEmpty()
+        val base = baseLookup(reading)
+        if (personal.isEmpty()) return base
+        val out = ArrayList<Entry>(minOf(PER_KEY, personal.size + base.size))
+        personal.forEach { if (out.size < PER_KEY) out.add(it) }
+        for (e in base) {
+            if (out.size >= PER_KEY) break
+            if (personal.none { it.word == e.word }) out.add(e)
+        }
+        return out
+    }
+
+    private fun baseLookup(reading: List<String>): List<Entry> {
         var key = 0L
         for (s in reading) key = key * BASE + ((syllableIds[s] ?: return emptyList()) + 1)
         val i = java.util.Arrays.binarySearch(keys, key)
@@ -51,11 +70,35 @@ class SentenceLexicon private constructor(
         }
     }
 
+    /**
+     * This lexicon's dictionary words with [personal] layered on top (replacing any earlier
+     * personal words), sharing the dictionary data. Each personal word is taken in its Taiwan
+     * form for its code's syllables (split on any whitespace) if it has one character per
+     * syllable; words with a blank code or more than [MAX_WORD] syllables are skipped, and a
+     * repeated word for the same reading counts once. All of them score [topScore].
+     */
+    fun withPersonal(personal: List<ChineseCustomDict.Entry>): SentenceLexicon {
+        val map = HashMap<String, MutableList<Entry>>()
+        val seen = HashSet<Pair<String, String>>()
+        for (entry in personal) {
+            if (entry.code.isBlank()) continue
+            val parts = entry.code.trim().split(WHITESPACE)
+            if (parts.size > MAX_WORD) continue
+            val word = TaiwanVariants.toTaiwan(entry.text)
+            if (word.codePointCount(0, word.length) != parts.size) continue
+            val reading = parts.joinToString(" ")
+            if (seen.add(reading to word)) map.getOrPut(reading) { ArrayList(1) }.add(Entry(word, topScore))
+        }
+        return SentenceLexicon(syllables, keys, entryStarts, text, wordStarts, scores, topScore, syllableIds, map)
+    }
+
+    /** Writes the dictionary words; personal words are not written. */
     fun write(out: OutputStream, tag: String) {
         val data = DataOutputStream(BufferedOutputStream(out))
         data.writeInt(MAGIC)
         data.writeInt(FORMAT)
         data.writeUTF(tag)
+        data.writeFloat(topScore)
         data.writeInt(syllables.size)
         syllables.forEach { data.writeUTF(it) }
         data.writeInt(keys.size)
@@ -134,22 +177,27 @@ class SentenceLexicon private constructor(
         private val TAG_FILES = listOf("FUTOKeyboard_ChineseDictionary_Name", "FUTOKeyboard_ChineseDictionary_Version")
         private const val BASE = 512L
         private const val MAGIC = 0x5A534C58 // "ZSLX"
-        private const val FORMAT = 1
+        // 2: personal words left out (see withPersonal), topScore added.
+        private const val FORMAT = 2
+        private val WHITESPACE = Regex("\\s+")
 
-        /** Identifies the dictionary and personal words a lexicon was built from. */
-        fun tag(sharedDir: File, personal: List<ChineseCustomDict.Entry>): String =
+        private fun idsOf(syllables: Array<String>): Map<String, Int> =
+            HashMap<String, Int>(syllables.size * 2).also { m -> syllables.forEachIndexed { i, s -> m[s] = i } }
+
+        /** Identifies the dictionary a lexicon was built from. */
+        fun tag(sharedDir: File): String =
             TAG_FILES.joinToString("|") { name ->
                 File(sharedDir, name).takeIf { it.exists() }?.readText()?.trim().orEmpty()
-            } + "|" + personal.hashCode()
+            }
 
         /**
-         * The lexicon cached in [cache] if it was built for the same dictionary and personal
-         * words, otherwise one built from [sharedDir] (and written to [cache]); null if the
-         * dictionary has no luna_pinyin.dict.yaml or essay.txt.
+         * The lexicon cached in [cache] if it was built for the same dictionary, otherwise one
+         * built from [sharedDir] (and written to [cache]); null if the dictionary has no
+         * luna_pinyin.dict.yaml or essay.txt. Personal words are added by [withPersonal].
          */
-        fun loadOrBuild(cache: File, sharedDir: File, personal: List<ChineseCustomDict.Entry>): SentenceLexicon? {
+        fun loadOrBuild(cache: File, sharedDir: File): SentenceLexicon? {
             val tag = try {
-                tag(sharedDir, personal)
+                tag(sharedDir)
             } catch (e: IOException) {
                 return null
             }
@@ -171,7 +219,7 @@ class SentenceLexicon private constructor(
             cache.parentFile?.listFiles { f -> f.name.startsWith("lexicon") && f.name.endsWith(".tmp") }
                 ?.forEach { it.delete() }
             val lexicon = try {
-                dict.bufferedReader().use { d -> essay.bufferedReader().use { e -> build(d, e, personal) } }
+                dict.bufferedReader().use { d -> essay.bufferedReader().use { e -> build(d, e) } }
             } catch (e: IOException) {
                 return null
             }
@@ -219,6 +267,7 @@ class SentenceLexicon private constructor(
                 if (bytes < 0 || bytes > byteLimit - counter.count) throw IOException("Count exceeds file size")
             }
             if (data.readInt() != MAGIC || data.readInt() != FORMAT || data.readUTF() != tag) return null
+            val topScore = data.readFloat()
             val syllableCount = data.readCount(BASE.toInt())
             need(syllableCount * 2L)
             val syllables = Array(syllableCount) { data.readUTF() }
@@ -247,6 +296,7 @@ class SentenceLexicon private constructor(
             val text = String(bytes.toByteArray(), Charsets.UTF_8)
 
             fun bad(): Nothing = throw IOException("Corrupt sentence lexicon")
+            if (topScore.isNaN()) bad()
             if (entryStarts[0] != 0 || entryStarts[keyCount] != entryCount) bad()
             for (i in 0 until keyCount) if (entryStarts[i + 1] < entryStarts[i]) bad()
             if (wordStarts[0] != 0 || wordStarts[entryCount] != text.length) bad()
@@ -264,12 +314,13 @@ class SentenceLexicon private constructor(
                 }
                 if (digits > MAX_WORD) bad()
             }
-            return SentenceLexicon(syllables, keys, entryStarts, text, wordStarts, scores)
+            return SentenceLexicon(syllables, keys, entryStarts, text, wordStarts, scores, topScore)
         }
 
-        fun build(dict: Reader, essay: Reader, personal: List<ChineseCustomDict.Entry>): SentenceLexicon {
+        /** The dictionary words of [dict] and [essay]; see [withPersonal] for personal words. */
+        fun build(dict: Reader, essay: Reader): SentenceLexicon {
             val syllableIds = HashMap<String, Int>()
-            val records = collect(dict, essay, personal, syllableIds)
+            val records = collect(dict, essay, syllableIds)
             return finish(records, syllableIds)
         }
 
@@ -277,7 +328,6 @@ class SentenceLexicon private constructor(
         private fun collect(
             dict: Reader,
             essay: Reader,
-            personal: List<ChineseCustomDict.Entry>,
             syllableIds: HashMap<String, Int>,
         ): Records {
             // Character readings with their share (null when the line gives none), and the
@@ -314,9 +364,8 @@ class SentenceLexicon private constructor(
                 total += weight
             }
 
-            val whitespace = Regex("\\s+")
             fun keyOf(code: String, length: Int): Long? {
-                val parts = code.trim().split(whitespace)
+                val parts = code.trim().split(WHITESPACE)
                 if (parts.size != length || length > MAX_WORD) return null
                 var key = 0L
                 for (p in parts) {
@@ -360,15 +409,6 @@ class SentenceLexicon private constructor(
                 val length = word.codePointCount(0, word.length)
                 val weight = weightOf(word, length) ?: continue
                 addWord(word, length, weight, codes)
-            }
-
-            val maxWeight = records.maxWeight
-            val personalSeen = HashSet<Pair<Long, String>>()
-            for (entry in personal) {
-                if (entry.code.isBlank()) continue
-                val word = TaiwanVariants.toTaiwan(entry.text)
-                val key = keyOf(entry.code, word.codePointCount(0, word.length)) ?: continue
-                if (personalSeen.add(key to word)) records.add(key, word, maxWeight + 1)
             }
             return records
         }
@@ -434,7 +474,8 @@ class SentenceLexicon private constructor(
             for ((s, id) in syllableIds) syllables[id] = s
             return SentenceLexicon(
                 syllables.requireNoNulls(), keys.toArray(), entryStarts.toArray(),
-                text.toString(), wordStarts.toArray(), scores.toArray()
+                text.toString(), wordStarts.toArray(), scores.toArray(),
+                ln((records.maxWeight + 1) / total).toFloat()
             )
         }
 

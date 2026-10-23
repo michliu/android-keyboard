@@ -1,11 +1,13 @@
 package org.futo.inputmethod.engine.general
 
 import android.content.Context
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.ExtractedTextRequest
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,10 +27,12 @@ import icu.astronot233.rime.X11Keys.XK_Linefeed
 import icu.astronot233.rime.X11Keys.XK_Return
 import icu.astronot233.rime.X11Keys.XK_Tab
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -38,6 +42,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.futo.inputmethod.engine.ExpandableSuggestionBarConfiguration
 import org.futo.inputmethod.engine.GlobalIMEMessage
 import org.futo.inputmethod.engine.IMEHelper
@@ -307,6 +312,15 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private var associationContext: String? = null
     private var associationWords: List<String> = emptyList()
     private var associationCommitted: String = ""
+    /** Bumped by [showAssociations] and [endAssociation]; a ranking result for an older value is dropped. */
+    private var associationGeneration = 0
+    /** Scores the associations of the latest commit before they are shown. */
+    private var associationRankJob: Job? = null
+    /**
+     * The ranking the strip waits for: its generation and the text it continues; null when none.
+     * Not [associationRankJob]'s state, since a native run past its timeout keeps that job going.
+     */
+    private var associationPending: Pair<Int, String>? = null
 
     /** Context reranker (依前文排序); null until loaded, or after it failed to load. */
     private var scorer: CandidateScorer? = null
@@ -318,18 +332,30 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private var charReadingsJob: Job? = null
     private val rerankDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     private var rerankJob: Job? = null
+    /** What [rerankJob] was launched for: the preedit and the candidate texts; null when none. */
+    private var rerankKey: Pair<String, List<String>>? = null
+    /** A rerank result shown in the strip, kept to show it again after Rime's order is redrawn. */
+    private class RerankResult(
+        val key: Pair<String, List<String>>,
+        val order: IntArray,
+        val override: SentenceChoice?,
+        val words: List<String>,
+        val comments: List<String?>,
+    )
+    /** The result [rerankJob] applied, if it changed the strip; null otherwise. */
+    private var rerankApplied: RerankResult? = null
     /** Display position → Rime index of the candidates shown; null while they are in Rime's order. */
     private var candidateOrder: IntArray? = null
-    /** Words for whole-sentence candidates (整句); null until loaded or built, or after it failed. */
+    /** The dictionary's words for whole-sentence candidates; null until loaded or built, or after it failed. */
+    private var sentenceBase: SentenceLexicon? = null
+    /** Words for whole-sentence candidates (整句): [sentenceBase] with [personalEntries] on top. */
     private var sentenceLexicon: SentenceLexicon? = null
     private var sentenceLexiconJob: Job? = null
     private var sentenceLexiconFailed = false
-    /** What [sentenceLexicon] was built from (see SentenceLexicon.tag). */
+    /** What [sentenceBase] was built from (see SentenceLexicon.tag). */
     private var sentenceLexiconTag: String? = null
-    /** Personal-dictionary entries of the last configuration update, for [sentenceLexicon]. */
+    /** Personal-dictionary entries of the last configuration update, layered over [sentenceBase]. */
     private var personalEntries: List<ChineseCustomDict.Entry> = emptyList()
-    /** Whether [personalEntries] was filled by a configuration update; no build starts before. */
-    private var personalEntriesLoaded = false
     /**
      * A sentence of the model shown in place of Rime's: [sentence] for the composition [preedit],
      * in which [chosen] was already chosen before it.
@@ -381,6 +407,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
         /** A rerank slower than this is dropped: the strip would change after the user moved on. */
         private const val RerankTimeoutMs = 300L
+        /** Associations wait at most this long in all, queueing on the dispatcher included. */
+        private const val AssociationMaxWaitMs = 600L
+        /** Candidate and sentence reranks wait at most this long in all, queueing on the dispatcher included. */
+        private const val RerankMaxWaitMs = 600L
         private const val RerankContextChars = 64
         private const val SentenceRerankTimeoutMs = 500L
         /** Rime selections tried for one sentence before committing the rest directly. */
@@ -533,7 +563,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         if(sentenceOverride.let { it != null && it.preedit != ped }) {
             candidateOrder = null
             sentenceOverride = null
-            rerankJob?.cancel()
+            cancelRerank()
             val candidates = rime.candidatesFlow.value
             // Empty: a commit, whose associations stay; the candidates collector handles the rest.
             if(ped.isNotEmpty() && notEditing && candidates.isNotEmpty()) {
@@ -551,7 +581,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
     override fun onStartEdit() {
         editingState = EditingState.Editing
-        rerankJob?.cancel()
+        cancelRerank()
         candidateOrder = null
         sentenceOverride = null
     }
@@ -626,15 +656,18 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     private fun subscribeToRimeCandidates() = rime.candidatesFlow.onEach { cdd ->
-        // New candidates are always shown in Rime's order first.
+        // New candidates are always shown in Rime's order first; maybeRerank below shows a
+        // result for them again, or lets a job already scoring them (started by the preedit
+        // collector) finish. Only when it is not called is the job cancelled here.
         candidateOrder = null
         sentenceOverride = null
-        rerankJob?.cancel()
+        if(cdd.isEmpty()) cancelRerank()
 
         waitingToSelect?.let { sel ->
             if(cdd.getOrNull(sel.second)?.text == sel.first) {
                 if(rime.selectCandidate(sel.second)) {
                     waitingToSelect = null
+                    cancelRerank()
                     return@onEach
                 } else {
                     Log.e(TAG, "Error selecting candidate!")
@@ -642,12 +675,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             }
         }
 
-        // Rime clears its candidates after a commit; keep the associations shown for that commit.
-        if(cdd.isEmpty() && associationContext != null) return@onEach
+        // Rime clears its candidates after a commit; keep the associations shown for that commit,
+        // or what the strip shows while they are ranked (no empty strip in between).
+        if(cdd.isEmpty() && (associationContext != null || associationPending?.first == associationGeneration)) return@onEach
 
         if(cdd.isNotEmpty()) {
             associationContext = null
             associationWords = emptyList()
+            associationPending = null
         }
 
         // Don't flicker an empty suggest bar when editing
@@ -720,6 +755,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
      * there are none. [committed] is the text that was just committed (the end of [context]).
      */
     private fun showAssociations(context: String, committed: String) {
+        // A ranking still running for an earlier commit no longer applies.
+        associationGeneration++
+        associationRankJob?.cancel()
+        associationRankJob = null
         val words = association?.lookup(context).orEmpty()
         val show = words.isNotEmpty()
                 && isBopomofo && !isOnEnglishPage
@@ -735,10 +774,113 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             return
         }
 
+        val scorer = scorer
+        val firsts = if(scorer != null && rerankAllowed()) AssociationRanker.firstCharacters(words, scorer::covers) else emptyList()
+        val rankContext = if(firsts.size >= 2) connect?.getTextBeforeCursor(RerankContextChars, 0)?.toString().orEmpty() else ""
+        if(scorer == null || rankContext.isEmpty()) {
+            applyAssociations(context, words, committed)
+            return
+        }
+
+        // Nothing is shown until the model has ranked them (no reordering in view): end the
+        // associations shown now, which also bumps the generation, then take the new one for
+        // this ranking. A strip kept for an earlier ranking stays until this one is done.
+        associationPending = null
+        endAssociation()
+        // Text selected right after the commit: a tapped association would replace it.
+        val cursor = collapsedCursor() ?: run { setNeutralSuggestionStrip(); return }
+        val generation = ++associationGeneration
+        associationPending = generation to committed
+        associationRankJob = coroScope.launch {
+            val start = SystemClock.elapsedRealtime()
+            val started = CompletableDeferred<Long>()
+            val scoring = async(rerankDispatcher) {
+                started.complete(SystemClock.elapsedRealtime())
+                try {
+                    scorer.scoreNext(rankContext, firsts)
+                } catch(e: CancellationException) {
+                    throw e
+                } catch(e: Exception) {
+                    Log.e(TAG, "Association ranking failed", e)
+                    null
+                } catch(e: OutOfMemoryError) {
+                    Log.e(TAG, "Out of memory during association ranking", e)
+                    null
+                }
+            }
+            // The model's time counts from when it starts, not while queued behind another run;
+            // the strip never waits longer than AssociationMaxWaitMs in all.
+            val scores = withTimeoutOrNull(AssociationMaxWaitMs) {
+                val begun = started.await()
+                withTimeoutOrNull(begun + RerankTimeoutMs - SystemClock.elapsedRealtime()) { scoring.await() }
+            }
+            if(scores == null) scoring.cancel()
+            if(generation != associationGeneration) return@launch
+            // Typed on, moved away, selected text, or the text before the cursor changed while the
+            // model ran. Ending also restores the strip if nothing else replaced it meanwhile.
+            if(rawInput.text.isNotEmpty() || rime.preeditFlow.value.isNotEmpty() ||
+                !isBopomofo || isOnEnglishPage || editingState.active ||
+                connect?.getTextBeforeCursor(committed.length, 0)?.toString() != committed) {
+                endAssociation()
+                return@launch
+            }
+            val now = collapsedCursor()
+            if(now == null || (cursor >= 0 && now >= 0 && now != cursor)) {
+                endAssociation()
+                return@launch
+            }
+            val shown = if(scores == null || scores.size != firsts.size) {
+                Log.w(TAG, "Associations shown unranked after ${SystemClock.elapsedRealtime() - start} ms")
+                words
+            } else {
+                AssociationRanker.rank(words, firsts.indices.associate { firsts[it] to scores[it] })
+            }
+            if(shown == null) {
+                endAssociation()
+                return@launch
+            }
+            applyAssociations(context, shown, committed)
+        }
+    }
+
+    private fun applyAssociations(context: String, words: List<String>, committed: String) {
+        associationPending = null
         associationContext = context
         associationWords = words
         associationCommitted = committed
         showSuggestionStrip(candidateWords(words))
+    }
+
+    /**
+     * The cursor's offset in the field, -1 if the field does not say, or null if text is selected.
+     * Asked of the field itself: [onUpdateSelection] arrives late (debounced, and after our own
+     * commits), so its last values may predate the text just committed.
+     */
+    private fun collapsedCursor(): Int? {
+        val ic = connect ?: return -1
+        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Zero context on both sides: only the selection itself is copied, not the field.
+            val around = ic.getSurroundingText(0, 0, 0)
+            if(around != null && around.offset != -1) {
+                if(around.selectionStart != around.selectionEnd) return null
+                return around.offset + around.selectionStart
+            }
+        }
+        val extracted = ic.getExtractedText(ExtractedTextRequest().apply { hintMaxChars = 1 }, 0)
+        if(extracted != null && extracted.selectionStart >= 0 && extracted.selectionEnd >= 0) {
+            if(extracted.selectionStart != extracted.selectionEnd) return null
+            return extracted.startOffset + extracted.selectionStart
+        }
+        return if(ic.getSelectedText(0).isNullOrEmpty()) -1 else null
+    }
+
+    /** False in fields whose text must not reach the context model (passwords, incognito). */
+    private fun rerankAllowed(): Boolean {
+        if(!helper.context.getSetting(ChineseIMESettings.RerankSetting)) return false
+        val info = helper.getCurrentEditorInfo() ?: return false
+        return !(InputTypeUtils.isPasswordInputType(info.inputType) ||
+            InputTypeUtils.isVisiblePasswordInputType(info.inputType) ||
+            (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0)
     }
 
     /** Loads the context reranker in the background once, if the Zhuyin layout and setting want it. */
@@ -779,16 +921,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     /**
-     * Loads the sentence lexicon in the background, building it (seconds) on first use or when
-     * the dictionary or personal words changed; does nothing if the loaded one still matches.
-     * The previous one stays in use meanwhile.
+     * Loads the sentence lexicon's dictionary words in the background, building them (seconds) on
+     * first use or when the dictionary changed; does nothing if the loaded ones still match. The
+     * previous lexicon stays in use meanwhile. Personal words are layered on in memory
+     * ([setSentenceBase]), so they never cause a build.
      */
     private fun ensureSentenceLexicon() {
         if(!isBopomofo || sentenceLexiconJob != null || sentenceLexiconFailed) return
-        // Wait for the personal words, or the build would run again once they arrive.
-        if(!personalEntriesLoaded) return
         if(!helper.context.getSetting(ChineseIMESettings.RerankSetting)) return
-        val personal = personalEntries
         val shared = getShared(helper.context)
         val cache = File(helper.context.filesDir, "zhuyin-sentence/lexicon.bin")
         val loadedTag = sentenceLexiconTag
@@ -800,8 +940,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     if(!File(shared, SentenceLexicon.DICT_FILE).exists() || !File(shared, SentenceLexicon.ESSAY_FILE).exists()) {
                         return@withContext NoSentenceDictionary
                     }
-                    val tag = SentenceLexicon.tag(shared, personal)
-                    if(tag == loadedTag) null else tag to SentenceLexicon.loadOrBuild(cache, shared, personal)
+                    val tag = SentenceLexicon.tag(shared)
+                    if(tag == loadedTag) null else tag to SentenceLexicon.loadOrBuild(cache, shared)
                 } catch(e: CancellationException) {
                     throw e
                 } catch(e: Exception) {
@@ -814,23 +954,29 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             }
             sentenceLexiconJob = null
             if(result === NoSentenceDictionary) {
-                sentenceLexicon = null
+                setSentenceBase(null)
                 sentenceLexiconTag = null
                 Log.i(TAG, "Sentence lexicon: no dictionary")
                 return@launch
             }
             val (tag, loaded) = result ?: return@launch
             if(loaded != null) {
-                sentenceLexicon = loaded
+                setSentenceBase(loaded)
                 sentenceLexiconTag = tag
             } else {
                 // A failure disables sentences until restart, including an older lexicon.
                 sentenceLexiconFailed = true
-                sentenceLexicon = null
+                setSentenceBase(null)
                 sentenceLexiconTag = null
             }
             Log.i(TAG, "Sentence lexicon: ${loaded?.entryCount ?: 0} words in ${SystemClock.elapsedRealtime() - start} ms")
         }
+    }
+
+    /** Uses [base] (null: none) with the current [personalEntries] on top. No I/O. */
+    private fun setSentenceBase(base: SentenceLexicon?) {
+        sentenceBase = base
+        sentenceLexicon = base?.withPersonal(personalEntries)
     }
 
     /** Texts of the personal-dictionary words; Rime ranks them first, so the reranker leaves them. */
@@ -842,8 +988,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
      * are dropped.
      */
     private fun maybeRerank(candidates: List<RimeCandidate>) {
-        rerankJob?.cancel()
-        rerankJob = null
+        val preedit = rime.preeditFlow.value
+        // Each key reaches here twice (preedit, then candidates): score each composition once.
+        val key = preedit to candidates.map { it.text }
+        if(key == rerankKey && reuseRerank(key)) return
+        cancelRerank()
         val scorer = scorer ?: return
         if(sentenceCommitting) return
         if(!isBopomofo || isOnEnglishPage || editingState.active) return
@@ -857,10 +1006,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             InputTypeUtils.isVisiblePasswordInputType(info.inputType) ||
             (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0) return
 
-        val preedit = rime.preeditFlow.value
         val (chosen, reading) = ZhuyinReading.splitSelected(preedit) ?: return
         if(reading.size in SentenceNBest.SYLLABLES) {
-            maybeRerankSentence(scorer, candidates, preedit, chosen, reading)
+            maybeRerankSentence(scorer, candidates, key, chosen, reading)
             return
         }
         // Words the user already chose are only handled for sentences.
@@ -878,9 +1026,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         val context = connect?.getTextBeforeCursor(RerankContextChars, 0)?.toString().orEmpty()
         if(reading.size == 1 && context.isEmpty()) return
 
+        rerankKey = key
         rerankJob = coroScope.launch {
-            val start = SystemClock.elapsedRealtime()
+            val launched = SystemClock.elapsedRealtime()
+            // Timed from when the model starts, not while queued behind another run.
+            var start = 0L
             val scores = withContext(rerankDispatcher) {
+                start = SystemClock.elapsedRealtime()
                 try {
                     scorer.score(context, reading, scorable.map { words[it] })
                 } catch(e: CancellationException) {
@@ -898,13 +1050,56 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 Log.w(TAG, "Candidate rerank took $elapsed ms; ignored")
                 return@launch
             }
+            val waited = SystemClock.elapsedRealtime() - launched
+            if(waited > RerankMaxWaitMs) {
+                Log.d(TAG, "Candidate rerank landed after $waited ms in all; ignored")
+                return@launch
+            }
             // The user may have typed on while the model ran.
             if(rime.preeditFlow.value != preedit || rime.candidatesFlow.value.map { it.text } != words) return@launch
             val order = ZhuyinReranker.order(words.size, scorable, scores) ?: return@launch
             if(editingState.active || isOnEnglishPage || !isBopomofo) return@launch
             candidateOrder = order
-            showSuggestionStrip(candidateWords(order.map { words[it] }, order.map { candidates[it].comment }))
+            val shown = order.map { words[it] }
+            val comments = order.map { candidates[it].comment }
+            rerankApplied = RerankResult(key, order, null, shown, comments)
+            showSuggestionStrip(candidateWords(shown, comments))
         }
+    }
+
+    /** Cancels [rerankJob] and forgets what it was for and what it showed. */
+    private fun cancelRerank() {
+        rerankJob?.cancel()
+        rerankJob = null
+        rerankKey = null
+        rerankApplied = null
+    }
+
+    /**
+     * Handles a rerank request for [key], the composition [rerankJob] was launched for: lets a
+     * running job finish (it checks the composition before applying), shows its result again
+     * if the strip was redrawn in Rime's order since, or does nothing if it changed nothing.
+     * False if the request must be handled from scratch.
+     */
+    private fun reuseRerank(key: Pair<String, List<String>>): Boolean {
+        if(rerankJob?.isActive == true) {
+            Log.d(TAG, "Rerank skipped: already scoring this composition")
+            return true
+        }
+        val applied = rerankApplied?.takeIf { it.key == key }
+        if(applied == null) {
+            Log.d(TAG, "Rerank skipped: this composition was scored without a change")
+            return true
+        }
+        // The same conditions as when the result was applied.
+        if(editingState.active || isOnEnglishPage || !isBopomofo || sentenceCommitting) return false
+        if(!helper.context.getSetting(ChineseIMESettings.RerankSetting)) return false
+        Log.d(TAG, "Rerank skipped: this composition's result shown again")
+        if(candidateOrder === applied.order && sentenceOverride == applied.override) return true
+        candidateOrder = applied.order
+        sentenceOverride = applied.override
+        showSuggestionStrip(candidateWords(applied.words, applied.comments))
+        return true
     }
 
     /**
@@ -912,9 +1107,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
      * the model clearly prefers another, shows that one first (Rime's moves to second).
      */
     private fun maybeRerankSentence(
-        scorer: CandidateScorer, candidates: List<RimeCandidate>, preedit: String,
+        scorer: CandidateScorer, candidates: List<RimeCandidate>, key: Pair<String, List<String>>,
         chosen: String, reading: List<ZhuyinSyllable>,
     ) {
+        val preedit = key.first
         // Traditional output only; unknown before the first configuration update.
         if(prevConfiguration?.simplification != false) return
         val lexicon = sentenceLexicon ?: run { ensureSentenceLexicon(); return }
@@ -924,9 +1120,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         val spellings = reading.map { ZhuyinSyllables.toLunaPinyin(it.base) ?: return }
         val context = connect?.getTextBeforeCursor(RerankContextChars, 0)?.toString().orEmpty() + chosen
 
+        rerankKey = key
         rerankJob = coroScope.launch {
-            val start = SystemClock.elapsedRealtime()
+            val launched = SystemClock.elapsedRealtime()
+            // Timed from when the work starts, not while queued behind another run.
+            var start = 0L
             val result = withContext(rerankDispatcher) {
+                start = SystemClock.elapsedRealtime()
                 try {
                     val list = SentenceNBest.candidates(lexicon, spellings, rimeSentence, scorer::covers)
                     if(list.size < 2) null
@@ -948,16 +1148,25 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 Log.w(TAG, "Sentence rerank took $elapsed ms; ignored")
                 return@launch
             }
+            val waited = SystemClock.elapsedRealtime() - launched
+            if(waited > RerankMaxWaitMs) {
+                Log.d(TAG, "Sentence rerank landed after $waited ms in all; ignored")
+                return@launch
+            }
             if(rime.preeditFlow.value != preedit || rime.candidatesFlow.value.map { it.text } != words) return@launch
             if(editingState.active || isOnEnglishPage || !isBopomofo || sentenceCommitting) return@launch
             val best = SentenceNBest.promoted(scores) ?: return@launch
             val sentence = list[best]
             // Rime may offer the same sentence further down: show it only once, first.
             val rest = words.indices.filter { words[it] != sentence }
-            sentenceOverride = SentenceChoice(preedit, chosen, sentence)
-            candidateOrder = (listOf(-1) + rest).toIntArray()
-            showSuggestionStrip(candidateWords(
-                listOf(sentence) + rest.map { words[it] }, listOf(null) + rest.map { candidates[it].comment }))
+            val choice = SentenceChoice(preedit, chosen, sentence)
+            val order = (listOf(-1) + rest).toIntArray()
+            val shown = listOf(sentence) + rest.map { words[it] }
+            val comments = listOf(null) + rest.map { candidates[it].comment }
+            sentenceOverride = choice
+            candidateOrder = order
+            rerankApplied = RerankResult(key, order, choice, shown, comments)
+            showSuggestionStrip(candidateWords(shown, comments))
         }
     }
 
@@ -1015,7 +1224,16 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private fun rimeIndexOf(displayIndex: Int): Int = candidateOrder?.getOrNull(displayIndex) ?: displayIndex
 
     private fun endAssociation() {
-        if(associationContext == null) return
+        associationGeneration++
+        associationRankJob?.cancel()
+        associationRankJob = null
+        // The strip still shows what it had before the ranking (see the candidates collector).
+        val waited = associationPending != null
+        associationPending = null
+        if(associationContext == null) {
+            if(waited) setNeutralSuggestionStrip()
+            return
+        }
         associationContext = null
         associationWords = emptyList()
         associationCommitted = ""
@@ -1023,12 +1241,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int, composingSpanStart: Int, composingSpanEnd: Int) {
-        if(associationContext == null) return
+        // Shown associations, or ones being ranked for the latest commit.
+        val committed = if(associationContext != null) associationCommitted
+            else associationPending?.takeIf { it.first == associationGeneration }?.second ?: return
         // The user moved the cursor, selected text, or the app changed the text (e.g. cleared the
-        // field after sending): the shown associations no longer follow the text at the cursor.
+        // field after sending): the associations no longer follow the text at the cursor.
         // Our own commits pass this check, since they leave the committed text before the cursor.
         if(newSelStart != newSelEnd ||
-            connect?.getTextBeforeCursor(associationCommitted.length, 0)?.toString() != associationCommitted) {
+            connect?.getTextBeforeCursor(committed.length, 0)?.toString() != committed) {
             endAssociation()
         }
     }
@@ -1077,6 +1297,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
     override fun onStartInput() {
         endAssociation()
+        cancelRerank()
         // Order matters: extracting the dictionary wipes the shared directory, so the bundled
         // schemas are (re)copied afterwards.
         val dictionaryChanged = resetSharedFromResources(helper.context, helper.lifecycleScope)
@@ -1096,7 +1317,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             sentenceLexiconJob = null
             sentenceLexiconFailed = false
             sentenceLexiconTag = null
-            sentenceLexicon = null
+            setSentenceBase(null)
         }
         ensureScorerLoaded()
     }
@@ -1256,8 +1477,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 val customDict = withContext(Dispatchers.IO) { ChineseCustomDict.render(customEntries) }
                 // Rime shows them in Taiwan forms (the t2tw filter) unless output is simplified.
                 personalWords = customEntries.flatMap { listOf(it.text, TaiwanVariants.toTaiwan(it.text)) }.toSet()
-                personalEntries = customEntries
-                personalEntriesLoaded = true
+                if(customEntries != personalEntries) {
+                    personalEntries = customEntries
+                    sentenceLexicon = sentenceBase?.withPersonal(customEntries)
+                }
                 ensureSentenceLexicon()
 
                 // The IO block above is a suspension point: an editing session may have started

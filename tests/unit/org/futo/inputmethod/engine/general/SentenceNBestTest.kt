@@ -10,7 +10,6 @@ class SentenceNBestTest {
     private val lexicon = SentenceLexicon.build(
         StringReader("---\n...\n請\tqing\n青\tqing\n到\tdao\n島\tdao\n登\tdeng\n記\tji"),
         StringReader("請到\t100\n青島\t60\n登記\t200\n請\t50\n到\t50\n青\t20\n島\t20\n登\t10\n記\t10"),
-        emptyList(),
     )
     private val reading = listOf("qing", "dao", "deng", "ji")
 
