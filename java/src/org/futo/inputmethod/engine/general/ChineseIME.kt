@@ -1,6 +1,7 @@
 package org.futo.inputmethod.engine.general
 
 import android.content.Context
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import android.view.KeyCharacterMap
@@ -408,6 +409,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         private const val RerankTimeoutMs = 300L
         /** Associations wait at most this long in all, queueing on the dispatcher included. */
         private const val AssociationMaxWaitMs = 600L
+        /** Candidate and sentence reranks wait at most this long in all, queueing on the dispatcher included. */
+        private const val RerankMaxWaitMs = 600L
         private const val RerankContextChars = 64
         private const val SentenceRerankTimeoutMs = 500L
         /** Rime selections tried for one sentence before committing the rest directly. */
@@ -855,6 +858,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
      */
     private fun collapsedCursor(): Int? {
         val ic = connect ?: return -1
+        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Zero context on both sides: only the selection itself is copied, not the field.
+            val around = ic.getSurroundingText(0, 0, 0)
+            if(around != null && around.offset != -1) {
+                if(around.selectionStart != around.selectionEnd) return null
+                return around.offset + around.selectionStart
+            }
+        }
         val extracted = ic.getExtractedText(ExtractedTextRequest().apply { hintMaxChars = 1 }, 0)
         if(extracted != null && extracted.selectionStart >= 0 && extracted.selectionEnd >= 0) {
             if(extracted.selectionStart != extracted.selectionEnd) return null
@@ -1017,6 +1028,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
         rerankKey = key
         rerankJob = coroScope.launch {
+            val launched = SystemClock.elapsedRealtime()
             // Timed from when the model starts, not while queued behind another run.
             var start = 0L
             val scores = withContext(rerankDispatcher) {
@@ -1036,6 +1048,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             val elapsed = SystemClock.elapsedRealtime() - start
             if(elapsed > RerankTimeoutMs) {
                 Log.w(TAG, "Candidate rerank took $elapsed ms; ignored")
+                return@launch
+            }
+            val waited = SystemClock.elapsedRealtime() - launched
+            if(waited > RerankMaxWaitMs) {
+                Log.d(TAG, "Candidate rerank landed after $waited ms in all; ignored")
                 return@launch
             }
             // The user may have typed on while the model ran.
@@ -1105,6 +1122,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
         rerankKey = key
         rerankJob = coroScope.launch {
+            val launched = SystemClock.elapsedRealtime()
             // Timed from when the work starts, not while queued behind another run.
             var start = 0L
             val result = withContext(rerankDispatcher) {
@@ -1128,6 +1146,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             Log.d(TAG, "Sentence rerank: ${list.size} sentences in $elapsed ms")
             if(elapsed > SentenceRerankTimeoutMs) {
                 Log.w(TAG, "Sentence rerank took $elapsed ms; ignored")
+                return@launch
+            }
+            val waited = SystemClock.elapsedRealtime() - launched
+            if(waited > RerankMaxWaitMs) {
+                Log.d(TAG, "Sentence rerank landed after $waited ms in all; ignored")
                 return@launch
             }
             if(rime.preeditFlow.value != preedit || rime.candidatesFlow.value.map { it.text } != words) return@launch
