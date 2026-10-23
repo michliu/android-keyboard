@@ -66,7 +66,8 @@ class ChineseAssociation private constructor(private val index: Map<String, Arra
             reader.buffered().forEachLine { line ->
                 val tab = line.indexOf('\t')
                 if (tab <= 0) return@forEachLine
-                val word = line.substring(0, tab)
+                // essay.txt uses OpenCC's traditional forms; the Zhuyin schema commits Taiwan forms.
+                val word = TaiwanVariants.toTaiwan(line.substring(0, tab))
                 val weight = line.substring(tab + 1).trim().toIntOrNull() ?: return@forEachLine
                 if (!isHan(word)) return@forEachLine
                 val length = word.codePointCount(0, word.length)

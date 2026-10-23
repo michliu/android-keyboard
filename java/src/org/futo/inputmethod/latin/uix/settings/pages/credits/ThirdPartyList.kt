@@ -184,6 +184,13 @@ SKK Development Team <skk@ring.gr.jp>""",
         License.BSD3
     ),
     TP(
+        "OpenCC",
+        "Taiwan character variants table - OpenCC",
+        "https://github.com/BYVoid/OpenCC",
+        "Copyright (c) Carbo Kuo and contributors",
+        License.Apache2
+    ),
+    TP(
         "ONNX Runtime",
         "Machine learning inference engine - ONNX Runtime",
         "https://onnxruntime.ai/",

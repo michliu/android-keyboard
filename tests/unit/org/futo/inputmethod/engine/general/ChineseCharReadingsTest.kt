@@ -89,4 +89,12 @@ class ChineseCharReadingsTest {
     fun multiCharacterQueryHasNoReading() {
         assertFalse(parse("...\n的\tde\n").has("的的", "de"))
     }
+
+    @Test
+    fun alsoReadsTheTaiwanForm() {
+        val r = parse("...\n爲\twei\n裏\tli")
+        assertTrue(r.has("爲", "wei"))
+        assertTrue(r.has("為", "wei"))
+        assertTrue(r.has("裡", "li"))
+    }
 }

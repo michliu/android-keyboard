@@ -920,6 +920,12 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             appendLine("        - name: futo_zh_simp")
             appendLine("          reset: ${if(cfg.simplification) 1 else 0}")
             appendLine("          states: [ 漢字, 汉字 ]")
+            // Taiwan character forms, Zhuyin only (see futo_bopomofo.schema.yaml).
+            if(schema.startsWith("futo_bopomofo")) {
+                appendLine("        - name: futo_zh_tw")
+                appendLine("          reset: ${if(cfg.simplification) 0 else 1}")
+                appendLine("          states: [ 傳統, 臺灣 ]")
+            }
             appendLine("    simplifier/option_name: futo_zh_simp")
 
             // Fuzzy pinyin only added to pinyin layouts
@@ -1002,7 +1008,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     ChineseCustomDict.entries(UserDictionaryIO(helper.context).get())
                 }
                 val customDict = withContext(Dispatchers.IO) { ChineseCustomDict.render(customEntries) }
-                personalWords = customEntries.map { it.text }.toSet()
+                // Rime shows them in Taiwan forms (the t2tw filter) unless output is simplified.
+                personalWords = customEntries.flatMap { listOf(it.text, TaiwanVariants.toTaiwan(it.text)) }.toSet()
 
                 // The IO block above is a suspension point: an editing session may have started
                 // while the personal dictionary was being read. Do not deploy in that case.

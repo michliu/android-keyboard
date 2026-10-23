@@ -99,4 +99,11 @@ class ChineseAssociationTest {
             dir.deleteRecursively()
         }
     }
+
+    @Test
+    fun indexesTaiwanForms() {
+        val association = parse("爲了\t9", "喫飯\t5")
+        assertEquals(listOf("了"), association.lookup("為"))
+        assertEquals(listOf("飯"), association.lookup("吃"))
+    }
 }

@@ -61,6 +61,11 @@ class ChineseCharReadings private constructor(
                 val id = spellingIds.getOrPut(spelling) { spellingIds.size }
                 if (n == pairs.size) pairs = pairs.copyOf(n * 2)
                 pairs[n++] = (ch.codePointAt(0).toLong() shl 32) or id.toLong()
+                val taiwan = TaiwanVariants.toTaiwan(ch)
+                if (taiwan != ch) {
+                    if (n == pairs.size) pairs = pairs.copyOf(n * 2)
+                    pairs[n++] = (taiwan.codePointAt(0).toLong() shl 32) or id.toLong()
+                }
             }
             java.util.Arrays.sort(pairs, 0, n)
 

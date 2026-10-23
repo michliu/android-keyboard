@@ -53,6 +53,7 @@ engine:
     - script_translator
   filters:
     - simplifier
+    - simplifier@zh_tw
     - uniquifier
 
 speller:
@@ -68,6 +69,12 @@ speller:
       - futo_zhuyin:/free_order
       - futo_zhuyin:/abbreviation
       - futo_zhuyin:/keymap_bopomofo
+
+# Taiwan character forms (爲→為, 喫→吃, 衆→眾, 裏→裡). FUTO Keyboard's custom patch declares the
+# futo_zh_tw switch: on, except with simplified output (t2tw would also turn simplified 着 into 著).
+zh_tw:
+  opencc_config: t2tw.json
+  option_name: futo_zh_tw
 
 translator:
   dictionary: luna_pinyin
