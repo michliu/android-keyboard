@@ -7,6 +7,14 @@ interface CandidateScorer {
 
     /** Log-probability of each candidate, in order, or null if they cannot be scored. */
     fun score(context: String, reading: List<ZhuyinSyllable>, candidates: List<String>): FloatArray?
+
+    /**
+     * Log-probability of each single-character candidate as the next character after [context]
+     * (which must not be empty), or null. One syllable is scored from the text alone, so the
+     * placeholder syllable's base and tone are never read.
+     */
+    fun scoreNext(context: String, candidates: List<String>): FloatArray? =
+        score(context, listOf(ZhuyinSyllable("", 0)), candidates)
 }
 
 /**

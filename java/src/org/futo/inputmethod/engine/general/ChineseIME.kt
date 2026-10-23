@@ -29,6 +29,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -38,6 +39,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.futo.inputmethod.engine.ExpandableSuggestionBarConfiguration
 import org.futo.inputmethod.engine.GlobalIMEMessage
 import org.futo.inputmethod.engine.IMEHelper
@@ -307,6 +309,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private var associationContext: String? = null
     private var associationWords: List<String> = emptyList()
     private var associationCommitted: String = ""
+    /** Bumped by [showAssociations] and [endAssociation]; a ranking result for an older value is dropped. */
+    private var associationGeneration = 0
+    /** Scores the associations of the latest commit before they are shown. */
+    private var associationRankJob: Job? = null
 
     /** Context reranker (依前文排序); null until loaded, or after it failed to load. */
     private var scorer: CandidateScorer? = null
@@ -735,6 +741,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
      * there are none. [committed] is the text that was just committed (the end of [context]).
      */
     private fun showAssociations(context: String, committed: String) {
+        // A ranking still running for an earlier commit no longer applies.
+        associationGeneration++
+        associationRankJob?.cancel()
+        associationRankJob = null
         val words = association?.lookup(context).orEmpty()
         val show = words.isNotEmpty()
                 && isBopomofo && !isOnEnglishPage
@@ -750,10 +760,68 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             return
         }
 
+        val scorer = scorer
+        val firsts = if(scorer != null && rerankAllowed()) AssociationRanker.firstCharacters(words, scorer::covers) else emptyList()
+        val rankContext = if(firsts.size >= 2) connect?.getTextBeforeCursor(RerankContextChars, 0)?.toString().orEmpty() else ""
+        if(scorer == null || rankContext.isEmpty()) {
+            applyAssociations(context, words, committed)
+            return
+        }
+
+        // Nothing is shown until the model has ranked them (no reordering in view): end what is
+        // shown now, which also bumps the generation, then take the new one for this ranking.
+        endAssociation()
+        val generation = ++associationGeneration
+        associationRankJob = coroScope.launch {
+            val start = SystemClock.elapsedRealtime()
+            val scoring = async(rerankDispatcher) {
+                try {
+                    scorer.scoreNext(rankContext, firsts)
+                } catch(e: CancellationException) {
+                    throw e
+                } catch(e: Exception) {
+                    Log.e(TAG, "Association ranking failed", e)
+                    null
+                } catch(e: OutOfMemoryError) {
+                    Log.e(TAG, "Out of memory during association ranking", e)
+                    null
+                }
+            }
+            val scores = withTimeoutOrNull(RerankTimeoutMs) { scoring.await() }
+            if(scores == null) scoring.cancel()
+            if(generation != associationGeneration) return@launch
+            // Typed on, moved away, or the text before the cursor changed while the model ran.
+            if(rawInput.text.isNotEmpty() || rime.preeditFlow.value.isNotEmpty()) return@launch
+            if(!isBopomofo || isOnEnglishPage || editingState.active) return@launch
+            if(connect?.getTextBeforeCursor(committed.length, 0)?.toString() != committed) return@launch
+            val shown = if(scores == null || scores.size != firsts.size) {
+                Log.w(TAG, "Associations shown unranked after ${SystemClock.elapsedRealtime() - start} ms")
+                words
+            } else {
+                AssociationRanker.rank(words, firsts.indices.associate { firsts[it] to scores[it] })
+            }
+            if(shown == null) {
+                endAssociation()
+                return@launch
+            }
+            applyAssociations(context, shown, committed)
+        }
+    }
+
+    private fun applyAssociations(context: String, words: List<String>, committed: String) {
         associationContext = context
         associationWords = words
         associationCommitted = committed
         showSuggestionStrip(candidateWords(words))
+    }
+
+    /** False in fields whose text must not reach the context model (passwords, incognito). */
+    private fun rerankAllowed(): Boolean {
+        if(!helper.context.getSetting(ChineseIMESettings.RerankSetting)) return false
+        val info = helper.getCurrentEditorInfo() ?: return false
+        return !(InputTypeUtils.isPasswordInputType(info.inputType) ||
+            InputTypeUtils.isVisiblePasswordInputType(info.inputType) ||
+            (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0)
     }
 
     /** Loads the context reranker in the background once, if the Zhuyin layout and setting want it. */
@@ -1081,6 +1149,9 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private fun rimeIndexOf(displayIndex: Int): Int = candidateOrder?.getOrNull(displayIndex) ?: displayIndex
 
     private fun endAssociation() {
+        associationGeneration++
+        associationRankJob?.cancel()
+        associationRankJob = null
         if(associationContext == null) return
         associationContext = null
         associationWords = emptyList()
