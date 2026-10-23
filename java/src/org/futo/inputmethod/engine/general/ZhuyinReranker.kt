@@ -16,15 +16,20 @@ interface CandidateScorer {
 object ZhuyinReranker {
     const val PROMOTE_MARGIN = 2.0f
     const val MAX_SCORED = 8
+    /**
+     * One syllable is scored from the context alone, so every candidate costs the same single
+     * model position; scoring more of Rime's list (which can hold 128) reaches more targets.
+     */
+    const val MAX_SCORED_SINGLE = 32
     const val MAX_SYLLABLES = 3
 
     /**
      * Rime indexes worth scoring: from the start of [candidates], those as long as [syllables]
-     * (in code points), up to [MAX_SCORED], skipping ones [covers] rejects. Empty when Rime's
+     * (in code points), up to [MAX_SCORED] ([MAX_SCORED_SINGLE] for one syllable), skipping ones [covers] rejects. Empty when Rime's
      * first candidate cannot be scored, since there would be nothing to compare against.
      */
     fun scorable(candidates: List<String>, syllables: Int, covers: (String) -> Boolean): List<Int> {
-        val run = candidates.take(MAX_SCORED)
+        val run = candidates.take(if (syllables == 1) MAX_SCORED_SINGLE else MAX_SCORED)
             .takeWhile { it.codePointCount(0, it.length) == syllables }
         if (run.isEmpty() || !covers(run[0])) return emptyList()
         return run.indices.filter { covers(run[it]) }
