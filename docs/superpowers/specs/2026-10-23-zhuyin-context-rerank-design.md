@@ -53,11 +53,11 @@
 - 模型：`java/assets/zhuyin-rerank/model.onnx`（int8）、`vocab.json`、`LICENSE`（MIT）、`SOURCE.md`（來源 repo、revision、原始與量化後的 SHA-256、量化指令）。
 - 量化指令（在電腦上執行一次，結果提交）：`onnxruntime.quantization.quantize_dynamic(model, out, weight_type=QInt8)`，onnxruntime 版本記在 `SOURCE.md`。
 - ONNX Runtime 只打包 arm64-v8a 與 armeabi-v7a；以 packaging 規則排除 x86、x86_64 的 `libonnxruntime*.so`。在這兩種架構上載入失敗，功能不啟用。
-- `model.onnx` 不壓縮存放（`noCompress 'onnx'`），以便直接從 assets 讀取。
+- 模型以 byte array 從 assets 讀入後建立 session，所以 `model.onnx` 照常壓縮存放（APK 內約 18MB）。
 
 ## 載入與錯誤處理
 
-- 第一次需要評分時在 IO 執行緒載入（約 0.2 秒）；載入中的評分請求直接跳過。
+- 注音布局開始輸入（`onStartInput`）且設定開啟時，在 IO 執行緒載入（約 0.2 秒）；載入完成前的候選不評分。
 - 載入失敗、評分出錯（含例外與 OOM）、或單次評分超過 300 ms：不調整順序，記一筆 log，之後照常打字。載入失敗後在本次程序存活期間不再重試。
 - `CancellationException` 照常往外拋。
 
