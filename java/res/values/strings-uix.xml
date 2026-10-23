@@ -672,6 +672,8 @@
     <string name="chinese_setting_association_subtitle">Zhuyin: after a word is entered, suggest words that often follow it</string>
     <string name="chinese_setting_rerank">Context-aware candidates</string>
     <string name="chinese_setting_rerank_subtitle">Zhuyin: use the text before the cursor to put the most likely word first (on-device)</string>
+    <string name="chinese_setting_zhuyin_correction">Zhuyin typo correction</string>
+    <string name="chinese_setting_zhuyin_correction_subtitle">Also suggest words for neighbouring keys. Can change correctly typed words</string>
 
     <!-- Specific to Japanese input method -->
     <string name="japanese_settings_title">Japanese Input Settings</string>
