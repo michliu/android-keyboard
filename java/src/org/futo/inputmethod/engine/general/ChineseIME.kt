@@ -320,16 +320,16 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private var rerankJob: Job? = null
     /** Display position → Rime index of the candidates shown; null while they are in Rime's order. */
     private var candidateOrder: IntArray? = null
-    /** Words for whole-sentence candidates (整句); null until loaded or built, or after it failed. */
+    /** The dictionary's words for whole-sentence candidates; null until loaded or built, or after it failed. */
+    private var sentenceBase: SentenceLexicon? = null
+    /** Words for whole-sentence candidates (整句): [sentenceBase] with [personalEntries] on top. */
     private var sentenceLexicon: SentenceLexicon? = null
     private var sentenceLexiconJob: Job? = null
     private var sentenceLexiconFailed = false
-    /** What [sentenceLexicon] was built from (see SentenceLexicon.tag). */
+    /** What [sentenceBase] was built from (see SentenceLexicon.tag). */
     private var sentenceLexiconTag: String? = null
-    /** Personal-dictionary entries of the last configuration update, for [sentenceLexicon]. */
+    /** Personal-dictionary entries of the last configuration update, layered over [sentenceBase]. */
     private var personalEntries: List<ChineseCustomDict.Entry> = emptyList()
-    /** Whether [personalEntries] was filled by a configuration update; no build starts before. */
-    private var personalEntriesLoaded = false
     /**
      * A sentence of the model shown in place of Rime's: [sentence] for the composition [preedit],
      * in which [chosen] was already chosen before it.
@@ -779,16 +779,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     /**
-     * Loads the sentence lexicon in the background, building it (seconds) on first use or when
-     * the dictionary or personal words changed; does nothing if the loaded one still matches.
-     * The previous one stays in use meanwhile.
+     * Loads the sentence lexicon's dictionary words in the background, building them (seconds) on
+     * first use or when the dictionary changed; does nothing if the loaded ones still match. The
+     * previous lexicon stays in use meanwhile. Personal words are layered on in memory
+     * ([setSentenceBase]), so they never cause a build.
      */
     private fun ensureSentenceLexicon() {
         if(!isBopomofo || sentenceLexiconJob != null || sentenceLexiconFailed) return
-        // Wait for the personal words, or the build would run again once they arrive.
-        if(!personalEntriesLoaded) return
         if(!helper.context.getSetting(ChineseIMESettings.RerankSetting)) return
-        val personal = personalEntries
         val shared = getShared(helper.context)
         val cache = File(helper.context.filesDir, "zhuyin-sentence/lexicon.bin")
         val loadedTag = sentenceLexiconTag
@@ -800,8 +798,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     if(!File(shared, SentenceLexicon.DICT_FILE).exists() || !File(shared, SentenceLexicon.ESSAY_FILE).exists()) {
                         return@withContext NoSentenceDictionary
                     }
-                    val tag = SentenceLexicon.tag(shared, personal)
-                    if(tag == loadedTag) null else tag to SentenceLexicon.loadOrBuild(cache, shared, personal)
+                    val tag = SentenceLexicon.tag(shared)
+                    if(tag == loadedTag) null else tag to SentenceLexicon.loadOrBuild(cache, shared)
                 } catch(e: CancellationException) {
                     throw e
                 } catch(e: Exception) {
@@ -814,23 +812,29 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             }
             sentenceLexiconJob = null
             if(result === NoSentenceDictionary) {
-                sentenceLexicon = null
+                setSentenceBase(null)
                 sentenceLexiconTag = null
                 Log.i(TAG, "Sentence lexicon: no dictionary")
                 return@launch
             }
             val (tag, loaded) = result ?: return@launch
             if(loaded != null) {
-                sentenceLexicon = loaded
+                setSentenceBase(loaded)
                 sentenceLexiconTag = tag
             } else {
                 // A failure disables sentences until restart, including an older lexicon.
                 sentenceLexiconFailed = true
-                sentenceLexicon = null
+                setSentenceBase(null)
                 sentenceLexiconTag = null
             }
             Log.i(TAG, "Sentence lexicon: ${loaded?.entryCount ?: 0} words in ${SystemClock.elapsedRealtime() - start} ms")
         }
+    }
+
+    /** Uses [base] (null: none) with the current [personalEntries] on top. No I/O. */
+    private fun setSentenceBase(base: SentenceLexicon?) {
+        sentenceBase = base
+        sentenceLexicon = base?.withPersonal(personalEntries)
     }
 
     /** Texts of the personal-dictionary words; Rime ranks them first, so the reranker leaves them. */
@@ -1096,7 +1100,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
             sentenceLexiconJob = null
             sentenceLexiconFailed = false
             sentenceLexiconTag = null
-            sentenceLexicon = null
+            setSentenceBase(null)
         }
         ensureScorerLoaded()
     }
@@ -1256,8 +1260,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 val customDict = withContext(Dispatchers.IO) { ChineseCustomDict.render(customEntries) }
                 // Rime shows them in Taiwan forms (the t2tw filter) unless output is simplified.
                 personalWords = customEntries.flatMap { listOf(it.text, TaiwanVariants.toTaiwan(it.text)) }.toSet()
-                personalEntries = customEntries
-                personalEntriesLoaded = true
+                if(customEntries != personalEntries) {
+                    personalEntries = customEntries
+                    sentenceLexicon = sentenceBase?.withPersonal(customEntries)
+                }
                 ensureSentenceLexicon()
 
                 // The IO block above is a suspension point: an editing session may have started
