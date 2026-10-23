@@ -28,4 +28,15 @@ object ZhuyinReading {
             ZhuyinSyllable(base, tone)
         }
     }
+
+    /**
+     * Splits a preedit whose first words were already chosen (e.g. "請到ㄉㄥˉ ㄐㄧˋ") into the
+     * chosen text and the syllables still to type; null if no toned syllables follow.
+     */
+    fun splitSelected(preedit: String): Pair<String, List<ZhuyinSyllable>>? {
+        val start = preedit.indexOfFirst(::isZhuyinLetter)
+        if (start < 0) return null
+        val reading = parse(preedit.substring(start)) ?: return null
+        return preedit.substring(0, start).trim() to reading
+    }
 }
