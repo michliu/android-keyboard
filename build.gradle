@@ -401,6 +401,8 @@ android {
     packagingOptions {
         jniLibs {
             useLegacyPackaging = true
+            // The Zhuyin reranker (ONNX Runtime) only ships for ARM; it is ~40 MB per x86 ABI.
+            excludes += ['lib/x86/libonnxruntime*.so', 'lib/x86_64/libonnxruntime*.so']
         }
     }
 }
@@ -437,6 +439,7 @@ dependencies {
 
     //implementation 'com.squareup.okhttp3:okhttp:4.11.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1'
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.31.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.7.1'
 
     implementation 'com.akuleshov7:ktoml-core:0.7.1'

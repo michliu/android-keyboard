@@ -5,6 +5,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
+import android.view.inputmethod.EditorInfo
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -15,6 +16,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import icu.astronot233.rime.DeployStage
 import icu.astronot233.rime.Rime
+import icu.astronot233.rime.RimeCandidate
 import icu.astronot233.rime.RimeMessage
 import icu.astronot233.rime.RimeSchema
 import icu.astronot233.rime.SyncStage
@@ -27,6 +29,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -68,11 +71,13 @@ import org.futo.inputmethod.latin.uix.settings.SettingToggleRaw
 import org.futo.inputmethod.latin.uix.settings.UserSetting
 import org.futo.inputmethod.latin.uix.settings.UserSettingsMenu
 import org.futo.inputmethod.latin.uix.settings.useDataStore
+import org.futo.inputmethod.latin.utils.InputTypeUtils
 import org.futo.inputmethod.latin.utils.ZipFileHelper
 import org.futo.inputmethod.latin.utils.toEnumOrNull
 import org.futo.inputmethod.v2keyboard.KeyboardLayoutSetV2
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.min
 
@@ -158,6 +163,11 @@ object ChineseIMESettings {
         true
     )
 
+    val RerankSetting = SettingsKey(
+        booleanPreferencesKey("ChineseIME_rerank"),
+        true
+    )
+
     var schemaList: List<RimeSchema> = emptyList()
     val menu = UserSettingsMenu(
         title = R.string.chinese_settings_title,
@@ -228,6 +238,14 @@ object ChineseIMESettings {
                 )
             },
 
+            UserSetting(R.string.chinese_setting_rerank, R.string.chinese_setting_rerank_subtitle) {
+                SettingToggleDataStore(
+                    stringResource(R.string.chinese_setting_rerank),
+                    RerankSetting,
+                    subtitle = stringResource(R.string.chinese_setting_rerank_subtitle)
+                )
+            },
+
         )
     )
 }
@@ -273,6 +291,15 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     private var associationWords: List<String> = emptyList()
     private var associationCommitted: String = ""
 
+    /** Context reranker (依前文排序); null until loaded, or after it failed to load. */
+    private var scorer: CandidateScorer? = null
+    private var scorerJob: Job? = null
+    private var scorerFailed = false
+    private val rerankDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+    private var rerankJob: Job? = null
+    /** Display position → Rime index of the candidates shown; null while they are in Rime's order. */
+    private var candidateOrder: IntArray? = null
+
     override fun getLoadingState(): MutableState<Boolean>? = rimeLoading
 
     private val isBopomofo get() = layoutHint == "bopomofo"
@@ -307,6 +334,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         /** How many times a failed schema selection is retried before giving up. */
         private const val MaxSchemaSelectRetries = 3
         private const val SchemaSelectRetryDelayMs = 2000L
+
+        /** A rerank slower than this is dropped: the strip would change after the user moved on. */
+        private const val RerankTimeoutMs = 300L
+        private const val RerankContextChars = 64
 
         @JvmStatic
         fun getRimeDir(context: Context) = context.getExternalFilesDir("rime")
@@ -450,6 +481,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
 
     override fun onStartEdit() {
         editingState = EditingState.Editing
+        rerankJob?.cancel()
+        candidateOrder = null
     }
 
     // For pinyin/stroke layouts the only valid characters for input simulation are ASCII letters;
@@ -522,6 +555,10 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
     }
 
     private fun subscribeToRimeCandidates() = rime.candidatesFlow.onEach { cdd ->
+        // New candidates are always shown in Rime's order first.
+        candidateOrder = null
+        rerankJob?.cancel()
+
         waitingToSelect?.let { sel ->
             if(cdd.getOrNull(sel.second)?.text == sel.first) {
                 if(rime.selectCandidate(sel.second)) {
@@ -547,6 +584,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         }
 
         showSuggestionStrip(candidateWords(cdd.map { it.text }, cdd.map { it.comment }))
+        if(cdd.isNotEmpty()) maybeRerank(cdd)
     }.launchIn(coroScope)
 
     /**
@@ -605,6 +643,107 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         showSuggestionStrip(candidateWords(words))
     }
 
+    /** Loads the context reranker in the background once, if the Zhuyin layout and setting want it. */
+    private fun ensureScorerLoaded() {
+        if(!isBopomofo || scorer != null || scorerJob != null || scorerFailed) return
+        if(!helper.context.getSetting(ChineseIMESettings.RerankSetting)) return
+        scorerJob = coroScope.launch {
+            val start = SystemClock.elapsedRealtime()
+            var loaded: CandidateScorer? = null
+            var stored = false
+            try {
+                withContext(Dispatchers.IO) {
+                    loaded = try {
+                        OnnxCandidateScorer.load(helper.context)
+                    } catch(e: CancellationException) {
+                        throw e
+                    } catch(e: Exception) {
+                        Log.e(TAG, "Failed to load the candidate reranker", e)
+                        null
+                    } catch(e: LinkageError) {
+                        Log.e(TAG, "No ONNX Runtime for this device", e)
+                        null
+                    } catch(e: OutOfMemoryError) {
+                        Log.e(TAG, "Out of memory loading the candidate reranker", e)
+                        null
+                    }
+                }
+                scorer = loaded
+                scorerFailed = loaded == null
+                scorerJob = null
+                stored = true
+            } finally {
+                // Cancelled (e.g. destroyed) after the load: nobody else will close it.
+                if(!stored) (loaded as? AutoCloseable)?.close()
+            }
+            Log.i(TAG, "Candidate reranker: ${if(loaded != null) "loaded" else "unavailable"} in ${SystemClock.elapsedRealtime() - start} ms")
+        }
+    }
+
+    /** Texts of the personal-dictionary words; Rime ranks them first, so the reranker leaves them. */
+    private var personalWords: Set<String> = emptySet()
+
+    /**
+     * Scores the shown candidates against the text before the cursor in the background and, if
+     * the model clearly prefers another one, shows it first. Results for an outdated composition
+     * are dropped.
+     */
+    private fun maybeRerank(candidates: List<RimeCandidate>) {
+        rerankJob?.cancel()
+        rerankJob = null
+        val scorer = scorer ?: return
+        if(!isBopomofo || isOnEnglishPage || editingState.active) return
+        if(!helper.context.getSetting(ChineseIMESettings.RerankSetting)) return
+        // Only once the last syllable has its tone (space counts as tone 1).
+        if(!ZhuyinKeymap.isToneKey(rawInput.text.lastOrNull())) return
+        // Personal-dictionary words are meant to stay first; never move one off the first place.
+        if(candidates.firstOrNull()?.text in personalWords) return
+        val info = helper.getCurrentEditorInfo() ?: return
+        if(InputTypeUtils.isPasswordInputType(info.inputType) ||
+            InputTypeUtils.isVisiblePasswordInputType(info.inputType) ||
+            (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0) return
+
+        val preedit = rime.preeditFlow.value
+        val reading = ZhuyinReading.parse(preedit) ?: return
+        if(reading.size > ZhuyinReranker.MAX_SYLLABLES) return
+        val words = candidates.map { it.text }
+        val scorable = ZhuyinReranker.scorable(words, reading.size, scorer::covers)
+        if(scorable.size < 2) return
+        val context = connect?.getTextBeforeCursor(RerankContextChars, 0)?.toString().orEmpty()
+        if(reading.size == 1 && context.isEmpty()) return
+
+        rerankJob = coroScope.launch {
+            val start = SystemClock.elapsedRealtime()
+            val scores = withContext(rerankDispatcher) {
+                try {
+                    scorer.score(context, reading, scorable.map { words[it] })
+                } catch(e: CancellationException) {
+                    throw e
+                } catch(e: Exception) {
+                    Log.e(TAG, "Candidate rerank failed", e)
+                    null
+                } catch(e: OutOfMemoryError) {
+                    Log.e(TAG, "Out of memory during candidate rerank", e)
+                    null
+                }
+            } ?: return@launch
+            val elapsed = SystemClock.elapsedRealtime() - start
+            if(elapsed > RerankTimeoutMs) {
+                Log.w(TAG, "Candidate rerank took $elapsed ms; ignored")
+                return@launch
+            }
+            // The user may have typed on while the model ran.
+            if(rime.preeditFlow.value != preedit || rime.candidatesFlow.value.map { it.text } != words) return@launch
+            val order = ZhuyinReranker.order(words.size, scorable, scores) ?: return@launch
+            if(editingState.active || isOnEnglishPage || !isBopomofo) return@launch
+            candidateOrder = order
+            showSuggestionStrip(candidateWords(order.map { words[it] }, order.map { candidates[it].comment }))
+        }
+    }
+
+    /** Rime index of the candidate shown at [displayIndex]. */
+    private fun rimeIndexOf(displayIndex: Int): Int = candidateOrder?.getOrNull(displayIndex) ?: displayIndex
+
     private fun endAssociation() {
         if(associationContext == null) return
         associationContext = null
@@ -659,6 +798,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         helper.lifecycleScope.cancel()
         coroScope.cancel()
         rime.shutdown()
+        // A native run may still be scoring on the dispatcher: close the session after it.
+        val s = scorer
+        scorer = null
+        rerankDispatcher.executor.execute { (s as? AutoCloseable)?.close() }
+        rerankDispatcher.close()
     }
 
     override fun onStartInput() {
@@ -675,6 +819,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         }
         updateConfig()
         ensureAssociationLoaded(reload = dictionaryChanged)
+        ensureScorerLoaded()
     }
 
     private fun isSimplifiedChinese(locale: Locale): Boolean {
@@ -815,11 +960,11 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                 // changes; the file itself is only rewritten when the content differs. The
                 // ContentResolver query, entries() and render() all do I/O or cross-process work,
                 // so keep them off the main thread.
-                val customDict = withContext(Dispatchers.IO) {
-                    ChineseCustomDict.render(
-                        ChineseCustomDict.entries(UserDictionaryIO(helper.context).get())
-                    )
+                val customEntries = withContext(Dispatchers.IO) {
+                    ChineseCustomDict.entries(UserDictionaryIO(helper.context).get())
                 }
+                val customDict = withContext(Dispatchers.IO) { ChineseCustomDict.render(customEntries) }
+                personalWords = customEntries.map { it.text }.toSet()
 
                 // The IO block above is a suspension point: an editing session may have started
                 // while the personal dictionary was being read. Do not deploy in that case.
@@ -896,6 +1041,7 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         endAssociation()
         layoutHint = layout.mainLayout.imeHint
         ensureAssociationLoaded()
+        ensureScorerLoaded()
         if(helper.isImeActive(this)) updateConfig()
     }
 
@@ -1026,6 +1172,8 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
         }
 
         if(codePoint == ' '.code) {
+            val first = rimeIndexOf(0)
+            val firstText = rime.candidatesFlow.value.getOrNull(first)?.text
             coroScope.launch {
                 when {
                     rawInput.text.isEmpty() && rime.preeditFlow.value.isEmpty() -> {
@@ -1034,10 +1182,13 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                         rime.processX11Code(' '.code)
                     }
                     ZhuyinKeymap.isToneKey(rawInput.text.lastOrNull()) -> {
-                        // The syllable already has a tone: space picks the first candidate, like
-                        // the pinyin layout does.
+                        // The syllable already has a tone: space picks the first candidate shown
+                        // (which the reranker may have moved ahead of Rime's first), like the
+                        // pinyin layout does.
                         rawInput.clear()
-                        if(!rime.selectCandidate(0)) rime.commitComposition()
+                        // The candidates may have changed since the key was pressed.
+                        val index = if(rime.candidatesFlow.value.getOrNull(first)?.text == firstText) first else 0
+                        if(!rime.selectCandidate(index)) rime.commitComposition()
                     }
                     else -> {
                         rawInput.append(' '.code)
@@ -1107,8 +1258,14 @@ class ChineseIME(val helper: IMEHelper) : IMEInterface, SuggestionStripViewAcces
                     val next = (context + suggestion.word).let { it.substring(it.offsetByCodePoints(it.length, -minOf(2, it.codePointCount(0, it.length)))) }
                     showAssociations(next, suggestion.word)
                 } else {
+                    var index = rimeIndexOf(suggestion.mCandidateIndex)
+                    if(rime.candidatesFlow.value.getOrNull(index)?.text != suggestion.word) {
+                        // The strip changed since it was drawn: find the tapped word itself.
+                        index = rime.candidatesFlow.value.indexOfFirst { it.text == suggestion.word }
+                            .takeIf { it >= 0 } ?: suggestion.mCandidateIndex
+                    }
                     coroScope.launch {
-                        if(!rime.selectCandidate(suggestion.mCandidateIndex)) {
+                        if(!rime.selectCandidate(index)) {
                             Log.e(TAG, "Couldn't select candidate")
                         }
                     }

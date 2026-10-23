@@ -67,3 +67,5 @@
 
 # Keep swipe
 -keep class org.futo.ml.inference.** { *; }
+# ONNX Runtime (Zhuyin candidate reranker): classes and members are used from native code.
+-keep class ai.onnxruntime.** { *; }

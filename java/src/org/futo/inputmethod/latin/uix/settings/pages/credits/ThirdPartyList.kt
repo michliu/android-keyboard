@@ -184,6 +184,20 @@ SKK Development Team <skk@ring.gr.jp>""",
         License.BSD3
     ),
     TP(
+        "ONNX Runtime",
+        "Machine learning inference engine - ONNX Runtime",
+        "https://onnxruntime.ai/",
+        "Copyright (c) Microsoft Corporation",
+        License.MIT
+    ),
+    TP(
+        "0c-sequence-d512",
+        "Zhuyin candidate reranking model",
+        "https://huggingface.co/Funmula/0c-sequence-d512",
+        "Copyright (c) 2026 Funmula Corp Limited",
+        License.MIT
+    ),
+    TP(
         "ClearFlow",
         "ClearFlow Layout",
         "https://clearflowkeyboard.github.io/",

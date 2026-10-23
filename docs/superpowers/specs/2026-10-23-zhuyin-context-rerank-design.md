@@ -9,6 +9,7 @@
 ## 可行性測試的結論（2026-10-23）
 
 - 模型：Funmula/0c-sequence-d512（MIT），revision `df4b9f04f8aee1dd34dcb246ac2b83c4ab3d14a9`，原始 `model.onnx` SHA-256 `71af1f0e77b2752cc71cbc04bf19c8e8f2e765662246f766e65a2822bab4e66e`（130MB）。以 ONNX Runtime 動態 int8 量化後約 33MB。
+- 2026-10-23 真機發現：動態 int8 量化（連中間值一起量化）在 Android ARM 的 ONNX Runtime 上分數錯誤（「候選人發表」＋ ㄓㄥˋ ㄐㄧㄢˋ：證件 −0.06、政見 −3.24，fp32 是 −6.10、−0.004），Mac 上同一檔案卻正確。改為只量化權重：字表 int8（每列一個縮放係數）、其餘 MatMul 用 4 位元 MatMulNBits，中間值維持 float32。另外，輸出層原本以固定索引從字表取列，ONNX Runtime 載入時會把它展開成 57MB 的 float32 常數，所以改寫成獨立的 MatMul 權重一起壓成 4 位元。最終約 36.6MB，手機上分數 −5.73、−0.006，載入 0.19 秒、鍵盤程序原生記憶體增加約 31MB（整體 PSS 約 230→300MB），合併評分約 29 ms。腳本在 `tools/zhuyin-rerank/quantize.py`。
 - 自訂 20 題同音詞測試：原始版與 int8 版都答對 19 題，排序結果完全相同。
 - 小米手機（arm64）實測 int8、2 執行緒：載入約 0.2 秒；每個候選評分中位數 10–21 ms。
 - Rime 每個候選只提供文字和註解，沒有分數或斷詞；打整句時只有一個整句候選，所以不做整句排序。
@@ -28,10 +29,12 @@
    - 2–3 個音節：一般模式（前文＋讀音＋候選），計算 log P(候選 | 前文, 讀音)。
    - 1 個音節：只看前文的模式，計算 log P(字 | 前文)；前文為空時不評分。
 3. 決定：只有當模型最高分的候選不是 Rime 第一名，且分數比 Rime 第一名高出至少 `PROMOTE_MARGIN = 2.0` 時，把它移到第一位；其餘候選維持 Rime 的相對順序。Rime 第一名不在可評分的候選中時，不調整。
+4. Rime 第一名是個人字典的詞時不調整。
+5. 有音節沒有聲調記號（省略聲調）時不評分。
 
 ## 元件
 
-- `ZhuyinReading`（純 Kotlin）：把組字區文字拆成音節。每個音節分成「基底」與「聲調」（ˊ=2、ˇ=3、ˋ=4、˙=5、沒有記號=1）。音節為空、基底不在模型字表、或組字區含非注音字元時回傳 null（不評分）。
+- `ZhuyinReading`（純 Kotlin）：把組字區文字拆成音節。每個音節分成「基底」與「聲調」（ˉ=1、ˊ=2、ˇ=3、ˋ=4、˙=5）。音節為空、沒有聲調記號（Rime 一聲會顯示 ˉ，沒有記號代表省略聲調）、或組字區含非注音字元時回傳 null（不評分）。
 - `RerankVocab`（純 Kotlin）：讀 `vocab.json`。字元 ID = 索引 + 8，基底 ID = 索引 + 2，0–7 是特殊符號（PAD=0、BOS=1、SEP=2、OUT=3、UNK=4）。
 - `RerankInput`（純 Kotlin）：依模型卡公開的輸入格式組出一次呼叫的張量，同一次評分的候選合併成一棵前綴樹，一次呼叫取得所有候選的分數。前文取最後 64 字，字表外的前文字元用 UNK。
 - `CandidateScorer` 介面：`fun score(context: String, reading: List<Syllable>, candidates: List<String>): FloatArray?`，回傳 null 代表無法評分。
@@ -50,8 +53,8 @@
 
 ## 打包
 
-- 模型：`java/assets/zhuyin-rerank/model.onnx`（int8）、`vocab.json`、`LICENSE`（MIT）、`SOURCE.md`（來源 repo、revision、原始與量化後的 SHA-256、量化指令）。
-- 量化指令（在電腦上執行一次，結果提交）：`onnxruntime.quantization.quantize_dynamic(model, out, weight_type=QInt8)`，onnxruntime 版本記在 `SOURCE.md`。
+- 模型：`java/assets/zhuyin-rerank/model.onnx`（只量化權重，約 36.6MB）、`vocab.json`、`LICENSE`（MIT）、`SOURCE.md`（來源 repo、revision、原始與量化後的 SHA-256、量化指令）。
+- 量化（在電腦上執行一次，結果提交）：`tools/zhuyin-rerank/quantize.py`（只量化權重，見上方真機發現），版本記在 `SOURCE.md`。
 - ONNX Runtime 只打包 arm64-v8a 與 armeabi-v7a；以 packaging 規則排除 x86、x86_64 的 `libonnxruntime*.so`。在這兩種架構上載入失敗，功能不啟用。
 - 模型以 byte array 從 assets 讀入後建立 session，所以 `model.onnx` 照常壓縮存放（APK 內約 18MB）。
 
