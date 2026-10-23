@@ -6,6 +6,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.io.File
+import java.io.IOException
 import java.io.StringReader
 import java.nio.file.Files
 import kotlin.math.ln
@@ -156,5 +160,96 @@ class SentenceLexiconTest {
             shared.deleteRecursively()
             cache.parentFile?.parentFile?.deleteRecursively()
         }
+    }
+
+    private fun withDictionary(block: (shared: File, cache: File) -> Unit) {
+        val shared = Files.createTempDirectory("shared").toFile()
+        val cacheRoot = Files.createTempDirectory("cache").toFile()
+        try {
+            shared.resolve("luna_pinyin.dict.yaml").writeText(dict)
+            shared.resolve("essay.txt").writeText(essay)
+            shared.resolve("FUTOKeyboard_ChineseDictionary_Name").writeText("zidian")
+            shared.resolve("FUTOKeyboard_ChineseDictionary_Version").writeText("1")
+            block(shared, cacheRoot.resolve("lexicon.bin"))
+        } finally {
+            shared.deleteRecursively()
+            cacheRoot.deleteRecursively()
+        }
+    }
+
+    private fun assertWorks(lex: SentenceLexicon?) {
+        assertEquals(listOf("請到", "青島"), words(lex!!, "qing dao"))
+    }
+
+    @Test
+    fun truncatedCacheIsRebuilt() = withDictionary { shared, cache ->
+        assertWorks(SentenceLexicon.loadOrBuild(cache, shared, emptyList()))
+        val bytes = cache.readBytes()
+        cache.writeBytes(bytes.copyOf(bytes.size / 2))
+        assertWorks(SentenceLexicon.loadOrBuild(cache, shared, emptyList()))
+    }
+
+    @Test
+    fun corruptedCacheNumbersAreRebuilt() = withDictionary { shared, cache ->
+        assertWorks(SentenceLexicon.loadOrBuild(cache, shared, emptyList()))
+        val bytes = cache.readBytes()
+        // Find the first key and make it -1.
+        val stream = java.io.ByteArrayInputStream(bytes)
+        val data = DataInputStream(stream)
+        data.readInt(); data.readInt(); data.readUTF()
+        repeat(data.readInt()) { data.readUTF() }
+        data.readInt()
+        val at = bytes.size - stream.available()
+        for (i in 0 until 8) bytes[at + i] = 0xFF.toByte()
+        cache.writeBytes(bytes)
+        assertWorks(SentenceLexicon.loadOrBuild(cache, shared, emptyList()))
+        // Garbage in the counts as well.
+        val garbled = cache.readBytes()
+        for (i in 12 until 24) garbled[i] = 0x7F
+        cache.writeBytes(garbled)
+        assertWorks(SentenceLexicon.loadOrBuild(cache, shared, emptyList()))
+    }
+
+    @Test
+    fun readRejectsNegativeCountsWithIOException() {
+        val out = ByteArrayOutputStream()
+        DataOutputStream(out).use {
+            it.writeInt(0x5A534C58)
+            it.writeInt(1)
+            it.writeUTF("t")
+            it.writeInt(-1)
+        }
+        try {
+            SentenceLexicon.read(ByteArrayInputStream(out.toByteArray()), "t")
+            throw AssertionError("expected IOException")
+        } catch (e: IOException) {
+            // expected
+        }
+    }
+
+    @Test
+    fun duplicateDictionaryLinesCountOnce() {
+        val once = lexicon().lookup(listOf("qing", "dao"))
+        val twice = lexicon(dict + "\n青島\tqing dao\n青島\tqing dao").lookup(listOf("qing", "dao"))
+        assertEquals(once, twice)
+    }
+
+    @Test
+    fun repeatedPersonalWordsCountOnce() {
+        val entry = ChineseCustomDict.Entry("宜蓁", "yi zhen", 1)
+        val d = "---\n...\n以\tyi\n宜\tyi\n真\tzhen\n蓁\tzhen"
+        assertEquals(
+            lexicon(d, "以真\t1000", listOf(entry)).lookup(listOf("yi", "zhen")),
+            lexicon(d, "以真\t1000", listOf(entry, entry)).lookup(listOf("yi", "zhen"))
+        )
+        // Any whitespace separates the syllables.
+        val tabbed = ChineseCustomDict.Entry("宜蓁", "yi \t zhen", 1)
+        assertEquals(listOf("宜蓁", "以真"), words(lexicon(d, "以真\t1000", listOf(tabbed)), "yi zhen"))
+    }
+
+    @Test
+    fun unwritableCacheStillReturnsTheLexicon() = withDictionary { shared, cache ->
+        val blocker = cache.parentFile!!.resolve("blocker").also { it.writeText("x") }
+        assertWorks(SentenceLexicon.loadOrBuild(blocker.resolve("sub/lexicon.bin"), shared, emptyList()))
     }
 }

@@ -1,8 +1,10 @@
 package org.futo.inputmethod.engine.general
 
 import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.EOFException
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -74,6 +76,8 @@ class SentenceLexicon private constructor(
         var words = arrayOfNulls<String>(1 shl 16)
         var weights = DoubleArray(1 shl 16)
         var size = 0
+        var maxWeight = 0.0
+        var total = 1L
 
         fun add(key: Long, word: String, weight: Double) {
             if (size == keys.size) {
@@ -85,7 +89,38 @@ class SentenceLexicon private constructor(
             words[size] = word
             weights[size] = weight
             size++
+            if (weight > maxWeight) maxWeight = weight
         }
+    }
+
+    private class LongBuf {
+        var a = LongArray(1024)
+        var size = 0
+        fun add(v: Long) {
+            if (size == a.size) a = a.copyOf(size * 2)
+            a[size++] = v
+        }
+        fun toArray() = a.copyOf(size)
+    }
+
+    private class IntBuf {
+        var a = IntArray(1024)
+        var size = 0
+        fun add(v: Int) {
+            if (size == a.size) a = a.copyOf(size * 2)
+            a[size++] = v
+        }
+        fun toArray() = a.copyOf(size)
+    }
+
+    private class FloatBuf {
+        var a = FloatArray(1024)
+        var size = 0
+        fun add(v: Float) {
+            if (size == a.size) a = a.copyOf(size * 2)
+            a[size++] = v
+        }
+        fun toArray() = a.copyOf(size)
     }
 
     companion object {
@@ -119,36 +154,96 @@ class SentenceLexicon private constructor(
                     cache.inputStream().use { read(it, tag) }?.let { return it }
                 } catch (e: IOException) {
                     // Truncated or corrupt: rebuild below.
+                } catch (e: RuntimeException) {
+                    // Corrupt in a way that broke an assumption: rebuild below.
                 }
             }
             val dict = File(sharedDir, DICT_FILE)
             val essay = File(sharedDir, ESSAY_FILE)
             if (!dict.exists() || !essay.exists()) return null
             val lexicon = dict.bufferedReader().use { d -> essay.bufferedReader().use { e -> build(d, e, personal) } }
-            cache.parentFile?.mkdirs()
-            val tmp = File(cache.path + ".tmp")
-            tmp.outputStream().use { lexicon.write(it, tag) }
-            if (!tmp.renameTo(cache)) tmp.delete()
+            var tmp: File? = null
+            try {
+                cache.parentFile?.mkdirs()
+                tmp = File.createTempFile("lexicon", ".tmp", cache.parentFile)
+                tmp.outputStream().use { lexicon.write(it, tag) }
+                if (!tmp.renameTo(cache)) tmp.delete()
+            } catch (e: IOException) {
+                // The cache is only an optimisation.
+                tmp?.delete()
+            }
             return lexicon
         }
 
-        /** The lexicon written by [write] with the same [tag], or null if the tag or format differs. */
+        private const val MAX_COUNT = 10_000_000
+        private const val MAX_TEXT_BYTES = 100_000_000
+
+        private fun DataInputStream.readCount(max: Int): Int {
+            val n = readInt()
+            if (n < 0 || n > max) throw IOException("Implausible count $n")
+            return n
+        }
+
+        /**
+         * The lexicon written by [write] with the same [tag], or null if the tag or format
+         * differs. Throws [IOException] if the data is truncated or inconsistent.
+         */
         fun read(input: InputStream, tag: String): SentenceLexicon? {
             val data = DataInputStream(input.buffered())
             if (data.readInt() != MAGIC || data.readInt() != FORMAT || data.readUTF() != tag) return null
-            val syllables = Array(data.readInt()) { data.readUTF() }
-            val keyCount = data.readInt()
+            val syllables = Array(data.readCount(BASE.toInt())) { data.readUTF() }
+            val keyCount = data.readCount(MAX_COUNT)
             val keys = LongArray(keyCount) { data.readLong() }
             val entryStarts = IntArray(keyCount + 1) { data.readInt() }
-            val entryCount = data.readInt()
+            val entryCount = data.readCount(MAX_COUNT)
             val wordStarts = IntArray(entryCount + 1) { data.readInt() }
             val scores = FloatArray(entryCount) { data.readFloat() }
-            val bytes = ByteArray(data.readInt())
-            data.readFully(bytes)
-            return SentenceLexicon(syllables, keys, entryStarts, String(bytes, Charsets.UTF_8), wordStarts, scores)
+            val byteCount = data.readCount(MAX_TEXT_BYTES)
+            val bytes = ByteArrayOutputStream(minOf(byteCount, 1 shl 20))
+            val chunk = ByteArray(1 shl 16)
+            var left = byteCount
+            while (left > 0) {
+                val n = data.read(chunk, 0, minOf(left, chunk.size))
+                if (n < 0) throw EOFException()
+                bytes.write(chunk, 0, n)
+                left -= n
+            }
+            val text = String(bytes.toByteArray(), Charsets.UTF_8)
+
+            fun bad(): Nothing = throw IOException("Corrupt sentence lexicon")
+            if (entryStarts[0] != 0 || entryStarts[keyCount] != entryCount) bad()
+            for (i in 0 until keyCount) if (entryStarts[i + 1] < entryStarts[i]) bad()
+            if (wordStarts[0] != 0 || wordStarts[entryCount] != text.length) bad()
+            for (i in 0 until entryCount) if (wordStarts[i + 1] < wordStarts[i]) bad()
+            for (i in 0 until keyCount) {
+                if (i > 0 && keys[i] <= keys[i - 1]) bad()
+                var k = keys[i]
+                if (k <= 0) bad()
+                var digits = 0
+                while (k > 0) {
+                    val d = (k % BASE).toInt()
+                    if (d == 0 || d > syllables.size) bad()
+                    k /= BASE
+                    digits++
+                }
+                if (digits > MAX_WORD) bad()
+            }
+            return SentenceLexicon(syllables, keys, entryStarts, text, wordStarts, scores)
         }
 
         fun build(dict: Reader, essay: Reader, personal: List<ChineseCustomDict.Entry>): SentenceLexicon {
+            val syllableIds = HashMap<String, Int>()
+            val records = collect(dict, essay, personal, syllableIds)
+            return finish(records, syllableIds)
+        }
+
+        /** Reads the sources into (key, word, weight) records; the intermediate maps die on return. */
+        private fun collect(
+            dict: Reader,
+            essay: Reader,
+            personal: List<ChineseCustomDict.Entry>,
+            syllableIds: HashMap<String, Int>,
+        ): Records {
             // Character readings with their share (null when the line gives none), and the
             // readings the dictionary spells out for any entry, characters included.
             val charReadings = HashMap<String, MutableList<Pair<String, Double?>>>()
@@ -183,9 +278,9 @@ class SentenceLexicon private constructor(
                 total += weight
             }
 
-            val syllableIds = HashMap<String, Int>()
+            val whitespace = Regex("\\s+")
             fun keyOf(code: String, length: Int): Long? {
-                val parts = code.split(' ')
+                val parts = code.trim().split(whitespace)
                 if (parts.size != length || length > MAX_WORD) return null
                 var key = 0L
                 for (p in parts) {
@@ -197,35 +292,70 @@ class SentenceLexicon private constructor(
             }
 
             val records = Records()
-            for (word in essayWeights.keys union explicit.keys) {
+            records.total = total.coerceAtLeast(1)
+            val seen = ArrayList<Long>(4)
+            fun addWord(word: String, codes: List<String>) {
                 val length = word.codePointCount(0, word.length)
-                if (length !in 1..MAX_WORD) continue
+                if (length !in 1..MAX_WORD) return
                 val weight = (essayWeights[word] ?: 0L) + 0.5
-                if (length >= 2 && weight < MIN_WORD_WEIGHT) continue
+                if (length >= 2 && weight < MIN_WORD_WEIGHT) return
                 val taiwan = TaiwanVariants.toTaiwan(word)
-                val codes = explicit[word] ?: combinations(word, charReadings)
-                for (code in codes) keyOf(code, length)?.let { records.add(it, taiwan, weight) }
+                seen.clear()
+                for (code in codes) {
+                    val key = keyOf(code, length) ?: continue
+                    // The same reading listed twice for one word counts once.
+                    if (key in seen) continue
+                    seen.add(key)
+                    records.add(key, taiwan, weight)
+                }
             }
-            var maxWeight = 0.0
-            for (i in 0 until records.size) maxWeight = maxOf(maxWeight, records.weights[i])
+            for (word in essayWeights.keys) addWord(word, explicit[word] ?: combinations(word, charReadings))
+            for ((word, codes) in explicit) if (word !in essayWeights) addWord(word, codes)
+
+            val maxWeight = records.maxWeight
+            val personalSeen = HashSet<Pair<Long, String>>()
             for (entry in personal) {
                 val word = TaiwanVariants.toTaiwan(entry.text)
-                keyOf(entry.code, word.codePointCount(0, word.length))?.let { records.add(it, word, maxWeight + 1) }
+                val key = keyOf(entry.code, word.codePointCount(0, word.length)) ?: continue
+                if (personalSeen.add(key to word)) records.add(key, word, maxWeight + 1)
             }
+            return records
+        }
 
-            return finish(records, syllableIds, total.coerceAtLeast(1))
+        /** Sorts [index] (positions in [records]) by key, then word. */
+        private fun sortByKeyThenWord(index: IntArray, records: Records) {
+            val tmp = IntArray(index.size)
+            fun less(a: Int, b: Int): Boolean {
+                val ka = records.keys[a]
+                val kb = records.keys[b]
+                return if (ka != kb) ka < kb else records.words[a]!! < records.words[b]!!
+            }
+            fun sort(lo: Int, hi: Int) {
+                if (hi - lo < 2) return
+                val mid = (lo + hi) ushr 1
+                sort(lo, mid)
+                sort(mid, hi)
+                var i = lo
+                var j = mid
+                var k = lo
+                while (i < mid && j < hi) tmp[k++] = if (less(index[j], index[i])) index[j++] else index[i++]
+                while (i < mid) tmp[k++] = index[i++]
+                while (j < hi) tmp[k++] = index[j++]
+                System.arraycopy(tmp, lo, index, lo, hi - lo)
+            }
+            sort(0, index.size)
         }
 
         /** Merges equal (key, word) records, keeps the [PER_KEY] best words of each key, and packs them. */
-        private fun finish(records: Records, syllableIds: Map<String, Int>, total: Long): SentenceLexicon {
-            val order = (0 until records.size).sortedWith(
-                compareBy<Int>({ records.keys[it] }, { records.words[it] })
-            )
-            val keys = ArrayList<Long>()
-            val entryStarts = ArrayList<Int>()
+        private fun finish(records: Records, syllableIds: Map<String, Int>): SentenceLexicon {
+            val total = records.total
+            val order = IntArray(records.size) { it }
+            sortByKeyThenWord(order, records)
+            val keys = LongBuf()
+            val entryStarts = IntBuf()
             val text = StringBuilder()
-            val wordStarts = ArrayList<Int>()
-            val scores = ArrayList<Float>()
+            val wordStarts = IntBuf()
+            val scores = FloatBuf()
             var i = 0
             while (i < order.size) {
                 val key = records.keys[order[i]]
@@ -252,8 +382,8 @@ class SentenceLexicon private constructor(
             val syllables = arrayOfNulls<String>(syllableIds.size)
             for ((s, id) in syllableIds) syllables[id] = s
             return SentenceLexicon(
-                syllables.requireNoNulls(), keys.toLongArray(), entryStarts.toIntArray(),
-                text.toString(), wordStarts.toIntArray(), scores.toFloatArray()
+                syllables.requireNoNulls(), keys.toArray(), entryStarts.toArray(),
+                text.toString(), wordStarts.toArray(), scores.toArray()
             )
         }
 
